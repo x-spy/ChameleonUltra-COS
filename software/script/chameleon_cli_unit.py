@@ -867,6 +867,7 @@ lf_em = lf.subgroup("em", "EM commands")
 lf_em_4x05 = lf_em.subgroup("4x05", "EM4x05/EM4x69 commands")
 data = root.subgroup('data', 'Data analysis and visualization commands')
 emv = root.subgroup('emv', 'EMV contactless payment card commands')
+cos = root.subgroup('cos', 'ISO14443-4 COS emulation commands')
 
 
 lf_em_410x = lf_em.subgroup("410x", "EM410x commands")
@@ -8995,6 +8996,348 @@ class DataModulation(BaseCLIUnit):
 
 
 # ============================================================================
+# COS emulation commands  (cos subgroup)
+# ============================================================================
+
+def _cos_parse_fid(value: str) -> int:
+    value = value.strip().replace('0x', '').replace('0X', '')
+    return int(value, 16) & 0xFFFF
+
+
+def _cos_parse_hex(value: str) -> bytes:
+    return bytes.fromhex(value.replace(' ', '').replace(':', ''))
+
+
+def _cos_file_type_value(name: str) -> int:
+    values = {
+        'df': 0x02,
+        'binary': 0x04,
+        'record': 0x05,
+    }
+    return values[name]
+
+
+def _cos_file_type_name(value: int) -> str:
+    return {
+        0x01: 'MF',
+        0x02: 'DF',
+        0x04: 'EF.BINARY',
+        0x05: 'EF.RECORD',
+    }.get(value, f'0x{value:02X}')
+
+
+def _cos_print_status(resp, ok_text: str):
+    if resp.status == Status.SUCCESS:
+        print(f' {CG}{ok_text}{C0}')
+    else:
+        print(f' {CR}Failed: {Status(resp.status)}{C0}')
+
+
+class COSSlotUnit(SlotIndexArgsAndGoUnit):
+    def _slot_hf_type(self):
+        slot_info = self.cmd.get_slot_info()
+        return TagSpecificType(slot_info[int(self.slot_num) - 1]['hf'])
+
+
+@cos.command('enable')
+class COSEnable(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Enable COS on a slot'
+        self.add_slot_args(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        current = self._slot_hf_type()
+        if current == TagSpecificType.HF14A_4:
+            print(f' {CR}Refused: EMV/HF14A_4 is already enabled on this slot. Disable it first.{C0}')
+            return
+        if current not in (TagSpecificType.UNDEFINED, TagSpecificType.HF14A_COS):
+            print(f' {CR}Refused: slot HF type is {current}. Delete/disable HF first.{C0}')
+            return
+        if current == TagSpecificType.UNDEFINED:
+            self.cmd.set_slot_tag_type(self.slot_num, TagSpecificType.HF14A_COS)
+        self.cmd.set_slot_data_default(self.slot_num, TagSpecificType.HF14A_COS)
+        self.cmd.set_slot_enable(self.slot_num, TagSenseType.HF, True)
+        self.cmd.slot_data_config_save()
+        print(f' {CG}COS enabled on slot {self.slot_num}.{C0}')
+
+
+@cos.command('disable')
+class COSDisable(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Disable COS on a slot'
+        self.add_slot_args(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        current = self._slot_hf_type()
+        if current != TagSpecificType.HF14A_COS:
+            print(f' {CY}Slot {self.slot_num} is not COS.{C0}')
+            return
+        self.cmd.delete_slot_sense_type(self.slot_num, TagSenseType.HF)
+        self.cmd.slot_data_config_save()
+        print(f' {CG}COS disabled on slot {self.slot_num}.{C0}')
+
+
+@cos.command('init')
+class COSInit(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Reset COS data to a blank MF filesystem'
+        self.add_slot_args(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self._slot_hf_type() != TagSpecificType.HF14A_COS:
+            print(f' {CR}Active slot is not COS. Run cos enable first.{C0}')
+            return
+        self.cmd.set_slot_data_default(self.slot_num, TagSpecificType.HF14A_COS)
+        self.cmd.slot_data_config_save()
+        print(f' {CG}COS filesystem reset on slot {self.slot_num}.{C0}')
+
+
+@cos.command('config')
+class COSConfig(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Get or set COS options'
+        self.add_slot_args(parser)
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument('--write-enable', action='store_true', help='Allow APDU/CLI writes')
+        group.add_argument('--write-disable', action='store_true', help='Reject APDU/CLI writes')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if args.write_enable or args.write_disable:
+            resp = self.cmd.hf14a_cos_set_config(args.write_enable)
+            _cos_print_status(resp, 'COS config updated.')
+            if resp.status == Status.SUCCESS:
+                self.cmd.slot_data_config_save()
+            return
+        resp = self.cmd.hf14a_cos_get_config()
+        if resp.status != Status.SUCCESS:
+            print(f' {CR}Failed: {Status(resp.status)}{C0}')
+            return
+        print(f" {CG}Write enabled:{C0} {bool(resp.parsed['write_enabled'])}")
+
+
+@cos.command('anticoll')
+class COSAntiColl(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Get or set COS UID/ATQA/SAK/ATS'
+        self.add_slot_args(parser)
+        parser.add_argument('--uid', default='', metavar='<hex>')
+        parser.add_argument('--atqa', default='', metavar='<hex>')
+        parser.add_argument('--sak', default='', metavar='<hex>')
+        parser.add_argument('--ats', default='', metavar='<hex>')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self._slot_hf_type() != TagSpecificType.HF14A_COS:
+            print(f' {CR}Active slot is not COS.{C0}')
+            return
+        if args.uid or args.atqa or args.sak or args.ats:
+            if not (args.uid and args.atqa and args.sak):
+                print(f' {CR}--uid, --atqa and --sak are required when setting anticollision data.{C0}')
+                return
+            uid = _cos_parse_hex(args.uid)
+            atqa = _cos_parse_hex(args.atqa)
+            sak = _cos_parse_hex(args.sak)
+            ats = _cos_parse_hex(args.ats) if args.ats else b''
+            self.cmd.hf14a_set_anti_coll_data(uid, atqa, sak, ats)
+            self.cmd.slot_data_config_save()
+            print(f' {CG}COS anti-collision data updated.{C0}')
+            return
+        info = self.cmd.hf14a_get_anti_coll_data()
+        if not info:
+            print(f' {CR}No anti-collision data in active slot.{C0}')
+            return
+        print(f" {CG}UID :{C0} {info['uid'].hex().upper()}")
+        print(f" {CG}ATQA:{C0} {info['atqa'].hex().upper()}  {CG}SAK:{C0} {info['sak'].hex().upper()}")
+        print(f" {CG}ATS :{C0} {info['ats'].hex().upper()}")
+
+
+@cos.command('list')
+class COSList(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'List COS MF/DF/EF files'
+        self.add_slot_args(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf14a_cos_file_list()
+        if resp.status != Status.SUCCESS:
+            print(f' {CR}Failed: {Status(resp.status)}{C0}')
+            return
+        print(f' {CY}IDX  TYPE       FID   PARENT SFI SIZE RECORDS AID{C0}')
+        for f in resp.parsed:
+            aid = f['aid'].hex().upper()
+            sfi = '-' if f['sfi'] == 0 else str(f['sfi'])
+            print(f" {f['index']:>3}  {_cos_file_type_name(f['type']):<9} "
+                  f"{f['fid']:04X}  {f['parent_fid']:04X}   {sfi:<3} "
+                  f"{f['size']:>4} {f['records']:>7} {aid}")
+
+
+@cos.command('mkdir')
+class COSMkdir(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Create a COS DF'
+        self.add_slot_args(parser)
+        parser.add_argument('--parent', default='3F00', metavar='<fid>')
+        parser.add_argument('--fid', required=True, metavar='<fid>')
+        parser.add_argument('--aid', default='', metavar='<hex>')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        aid = _cos_parse_hex(args.aid) if args.aid else b''
+        resp = self.cmd.hf14a_cos_file_create(
+            _cos_parse_fid(args.parent), _cos_parse_fid(args.fid),
+            _cos_file_type_value('df'), aid=aid)
+        _cos_print_status(resp, f"DF {args.fid.upper()} created.")
+        if resp.status == Status.SUCCESS:
+            self.cmd.slot_data_config_save()
+
+
+@cos.command('create')
+class COSCreate(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Create a COS EF'
+        self.add_slot_args(parser)
+        parser.add_argument('--parent', default='3F00', metavar='<fid>')
+        parser.add_argument('--fid', required=True, metavar='<fid>')
+        parser.add_argument('--type', choices=['binary', 'record'], default='binary')
+        parser.add_argument('--sfi', type=int, default=0, metavar='<1-30>')
+        parser.add_argument('--record-size', type=int, default=0, metavar='<bytes>')
+        data_group = parser.add_mutually_exclusive_group()
+        data_group.add_argument('--data', default='', metavar='<hex>')
+        data_group.add_argument('--file', default='', metavar='<path>')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        initial = b''
+        if args.data:
+            initial = _cos_parse_hex(args.data)
+        elif args.file:
+            initial = Path(args.file).read_bytes()
+        create_data = b'' if args.type == 'record' else initial
+        resp = self.cmd.hf14a_cos_file_create(
+            _cos_parse_fid(args.parent), _cos_parse_fid(args.fid),
+            _cos_file_type_value(args.type), args.sfi, args.record_size,
+            data=create_data)
+        _cos_print_status(resp, f"EF {args.fid.upper()} created.")
+        if resp.status == Status.SUCCESS and args.type == 'record' and initial:
+            resp = self.cmd.hf14a_cos_record_append(_cos_parse_fid(args.fid), initial)
+            _cos_print_status(resp, f'Initial record appended ({len(initial)} bytes).')
+        if resp.status == Status.SUCCESS:
+            self.cmd.slot_data_config_save()
+
+
+@cos.command('delete')
+class COSDelete(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Delete a COS file subtree'
+        self.add_slot_args(parser)
+        parser.add_argument('--fid', required=True, metavar='<fid>')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf14a_cos_file_delete(_cos_parse_fid(args.fid))
+        _cos_print_status(resp, f"File {args.fid.upper()} deleted.")
+        if resp.status == Status.SUCCESS:
+            self.cmd.slot_data_config_save()
+
+
+@cos.command('read')
+class COSRead(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Read a COS EF from device memory'
+        self.add_slot_args(parser)
+        parser.add_argument('--fid', required=True, metavar='<fid>')
+        parser.add_argument('--offset', type=int, default=0)
+        parser.add_argument('--length', type=int, default=0)
+        parser.add_argument('-o', '--output', default='', metavar='<path>')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf14a_cos_file_read(_cos_parse_fid(args.fid), args.offset, args.length)
+        if resp.status != Status.SUCCESS:
+            print(f' {CR}Failed: {Status(resp.status)}{C0}')
+            return
+        data = bytes(resp.data)
+        if args.output:
+            Path(args.output).write_bytes(data)
+            print(f' {CG}Wrote {len(data)} bytes to {args.output}.{C0}')
+        else:
+            print_mem_dump(data)
+
+
+@cos.command('write')
+class COSWrite(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Write bytes to a binary COS EF'
+        self.add_slot_args(parser)
+        parser.add_argument('--fid', required=True, metavar='<fid>')
+        parser.add_argument('--offset', type=int, default=0)
+        data_group = parser.add_mutually_exclusive_group(required=True)
+        data_group.add_argument('--data', default='', metavar='<hex>')
+        data_group.add_argument('--file', default='', metavar='<path>')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        payload = _cos_parse_hex(args.data) if args.data else Path(args.file).read_bytes()
+        resp = self.cmd.hf14a_cos_file_write(_cos_parse_fid(args.fid), args.offset, payload)
+        _cos_print_status(resp, f'Wrote {len(payload)} bytes.')
+        if resp.status == Status.SUCCESS:
+            self.cmd.slot_data_config_save()
+
+
+@cos.command('append')
+class COSAppend(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Append one record to a COS record EF'
+        self.add_slot_args(parser)
+        parser.add_argument('--fid', required=True, metavar='<fid>')
+        data_group = parser.add_mutually_exclusive_group(required=True)
+        data_group.add_argument('--data', default='', metavar='<hex>')
+        data_group.add_argument('--file', default='', metavar='<path>')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        payload = _cos_parse_hex(args.data) if args.data else Path(args.file).read_bytes()
+        resp = self.cmd.hf14a_cos_record_append(_cos_parse_fid(args.fid), payload)
+        _cos_print_status(resp, f'Appended {len(payload)} byte record.')
+        if resp.status == Status.SUCCESS:
+            self.cmd.slot_data_config_save()
+
+
+@cos.command('apdu')
+class COSApdu(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Send one APDU to the active COS slot without RF'
+        self.add_slot_args(parser)
+        parser.add_argument('apdu', metavar='<hex>')
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        resp = self.cmd.hf14a_cos_apdu(_cos_parse_hex(args.apdu))
+        if resp.status != Status.SUCCESS:
+            print(f' {CR}Failed: {Status(resp.status)}{C0}')
+            return
+        print(' '.join(f'{b:02X}' for b in resp.data))
+
+
+# ============================================================================
 # EMV contactless payment card commands  (emv subgroup)
 # ============================================================================
 
@@ -9018,6 +9361,54 @@ def _emv_decode_apdu(data: bytes) -> str:
     if cla == 0x00 and ins == 0xB2:
         return f'READ RECORD  SFI={(p2 >> 3) & 0x1F}  rec={p1}'
     return f'CLA={cla:02x} INS={ins:02x} P1={p1:02x} P2={p2:02x}'
+
+
+class EMVSlotUnit(SlotIndexArgsAndGoUnit):
+    def _slot_hf_type(self):
+        slot_info = self.cmd.get_slot_info()
+        return TagSpecificType(slot_info[int(self.slot_num) - 1]['hf'])
+
+
+@emv.command('enable')
+class EMVEnable(EMVSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Enable original HF14A_4/EMV emulation on a slot'
+        self.add_slot_args(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        current = self._slot_hf_type()
+        if current == TagSpecificType.HF14A_COS:
+            print(f' {CR}Refused: COS is already enabled on this slot. Disable it first.{C0}')
+            return
+        if current not in (TagSpecificType.UNDEFINED, TagSpecificType.HF14A_4):
+            print(f' {CR}Refused: slot HF type is {current}. Delete/disable HF first.{C0}')
+            return
+        if current == TagSpecificType.UNDEFINED:
+            self.cmd.set_slot_tag_type(self.slot_num, TagSpecificType.HF14A_4)
+        self.cmd.set_slot_data_default(self.slot_num, TagSpecificType.HF14A_4)
+        self.cmd.set_slot_enable(self.slot_num, TagSenseType.HF, True)
+        self.cmd.slot_data_config_save()
+        print(f' {CG}EMV/HF14A_4 enabled on slot {self.slot_num}.{C0}')
+
+
+@emv.command('disable')
+class EMVDisable(EMVSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Disable original HF14A_4/EMV emulation on a slot'
+        self.add_slot_args(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        current = self._slot_hf_type()
+        if current != TagSpecificType.HF14A_4:
+            print(f' {CY}Slot {self.slot_num} is not EMV/HF14A_4.{C0}')
+            return
+        self.cmd.delete_slot_sense_type(self.slot_num, TagSenseType.HF)
+        self.cmd.slot_data_config_save()
+        print(f' {CG}EMV/HF14A_4 disabled on slot {self.slot_num}.{C0}')
 
 
 @emv.command('scan')

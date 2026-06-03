@@ -1,0 +1,3 @@
+#ifndef COS_HOST_STUB_NRF_LOG_CTRL_H
+#define COS_HOST_STUB_NRF_LOG_CTRL_H
+#endif

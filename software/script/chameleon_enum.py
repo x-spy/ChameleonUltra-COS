@@ -156,6 +156,16 @@ class Command(enum.IntEnum):
     HF14A_4_READER_APDU = 6004
     HF14A_4_EMV_SCAN = 6005
 
+    HF14A_COS_APDU = 6100
+    HF14A_COS_FILE_CREATE = 6101
+    HF14A_COS_FILE_DELETE = 6102
+    HF14A_COS_FILE_READ = 6103
+    HF14A_COS_FILE_WRITE = 6104
+    HF14A_COS_FILE_LIST = 6105
+    HF14A_COS_GET_CONFIG = 6106
+    HF14A_COS_SET_CONFIG = 6107
+    HF14A_COS_RECORD_APPEND = 6108
+
     EM410X_SET_EMU_ID = 5000
     EM410X_GET_EMU_ID = 5001
     HIDPROX_SET_EMU_ID = 5002
@@ -201,6 +211,9 @@ class Status(enum.IntEnum):
     FLASH_WRITE_FAIL = 0x70
     FLASH_READ_FAIL = 0x71
     INVALID_SLOT_TYPE = 0x72
+    MEM_ERR = 0x73
+    CREATE_RESPONSE_ERR = 0x74
+    CMD_ERR = 0x75
 
     def __str__(self):
         if self == Status.HF_TAG_OK:
@@ -241,6 +254,12 @@ class Status(enum.IntEnum):
             return "Flash read failed"
         elif self == Status.INVALID_SLOT_TYPE:
             return "Invalid card type in slot"
+        elif self == Status.MEM_ERR:
+            return "Device memory error"
+        elif self == Status.CREATE_RESPONSE_ERR:
+            return "Create response failed"
+        elif self == Status.CMD_ERR:
+            return "Command execution failed"
         return "Invalid status"
 
 
@@ -356,6 +375,7 @@ class TagSpecificType(enum.IntEnum):
 
     # ISO14443-4 T=CL emulation
     HF14A_4 = 3000
+    HF14A_COS = 3001
 
     @staticmethod
     def list(exclude_meta=True):
@@ -432,6 +452,10 @@ class TagSpecificType(enum.IntEnum):
             return "NTAG 210"
         elif self == TagSpecificType.NTAG_212:
             return "NTAG 212"
+        elif self == TagSpecificType.HF14A_4:
+            return "ISO14443-4 T=CL"
+        elif self == TagSpecificType.HF14A_COS:
+            return "ISO14443-4 COS"
         elif self < TagSpecificType.OLD_TAG_TYPES_END:
             return "Old tag type, must be migrated! Upgrade fw!"
         return "Invalid"

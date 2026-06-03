@@ -183,6 +183,16 @@
 #define DATA_CMD_HF14A_4_READER_APDU            (6004)  /* select+RATS+send APDU, keep field   */
 #define DATA_CMD_HF14A_4_EMV_SCAN               (6005)  /* full EMV scan in one call            */
 
+#define DATA_CMD_HF14A_COS_APDU                 (6100)  /* direct APDU into active COS slot      */
+#define DATA_CMD_HF14A_COS_FILE_CREATE          (6101)
+#define DATA_CMD_HF14A_COS_FILE_DELETE          (6102)
+#define DATA_CMD_HF14A_COS_FILE_READ            (6103)
+#define DATA_CMD_HF14A_COS_FILE_WRITE           (6104)
+#define DATA_CMD_HF14A_COS_FILE_LIST            (6105)
+#define DATA_CMD_HF14A_COS_GET_CONFIG           (6106)
+#define DATA_CMD_HF14A_COS_SET_CONFIG           (6107)
+#define DATA_CMD_HF14A_COS_RECORD_APPEND        (6108)
+
 #define DATA_CMD_EM410X_SET_EMU_ID              (5000)
 #define DATA_CMD_EM410X_GET_EMU_ID              (5001)
 #define DATA_CMD_HIDPROX_SET_EMU_ID             (5002)

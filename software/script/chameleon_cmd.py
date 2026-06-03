@@ -333,6 +333,90 @@ class ChameleonCMD:
         """Clear all static APDU responses from the active HF14A_4 slot."""
         return self.device.send_cmd_sync(Command.HF14A_4_STATIC_RESP, b'\x00')
 
+    def hf14a_cos_apdu(self, apdu: bytes):
+        """Send an APDU directly into the active COS slot without RF."""
+        return self.device.send_cmd_sync(Command.HF14A_COS_APDU, bytes(apdu), timeout=3)
+
+    def hf14a_cos_file_create(self, parent_fid: int, fid: int, file_type: int,
+                              sfi: int = 0, record_size: int = 0,
+                              aid: bytes = b'', data: bytes = b''):
+        """
+        Create a COS DF/EF in the active COS slot.
+
+        file_type: 0x02 DF, 0x04 binary EF, 0x05 record EF.
+        """
+        aid = bytes(aid)
+        data = bytes(data)
+        payload = struct.pack('!HHBBHBH',
+                              parent_fid & 0xFFFF,
+                              fid & 0xFFFF,
+                              file_type & 0xFF,
+                              sfi & 0x1F,
+                              record_size & 0xFFFF,
+                              len(aid),
+                              len(data))
+        return self.device.send_cmd_sync(Command.HF14A_COS_FILE_CREATE,
+                                         payload + aid + data)
+
+    def hf14a_cos_file_delete(self, fid: int):
+        payload = struct.pack('!H', fid & 0xFFFF)
+        return self.device.send_cmd_sync(Command.HF14A_COS_FILE_DELETE, payload)
+
+    def hf14a_cos_file_read(self, fid: int, offset: int = 0, length: int = 0):
+        payload = struct.pack('!HHH', fid & 0xFFFF, offset & 0xFFFF, length & 0xFFFF)
+        return self.device.send_cmd_sync(Command.HF14A_COS_FILE_READ, payload)
+
+    def hf14a_cos_file_write(self, fid: int, offset: int, data: bytes):
+        data = bytes(data)
+        payload = struct.pack('!HHH', fid & 0xFFFF, offset & 0xFFFF, len(data))
+        return self.device.send_cmd_sync(Command.HF14A_COS_FILE_WRITE, payload + data)
+
+    def hf14a_cos_record_append(self, fid: int, data: bytes):
+        data = bytes(data)
+        payload = struct.pack('!HH', fid & 0xFFFF, len(data))
+        return self.device.send_cmd_sync(Command.HF14A_COS_RECORD_APPEND, payload + data)
+
+    def hf14a_cos_file_list(self):
+        resp = self.device.send_cmd_sync(Command.HF14A_COS_FILE_LIST)
+        if resp.status == Status.SUCCESS and resp.data:
+            files = []
+            count = resp.data[0]
+            offset = 1
+            for _ in range(count):
+                if offset + 30 > len(resp.data):
+                    break
+                idx = resp.data[offset]
+                file_type = resp.data[offset + 1]
+                fid, parent_fid = struct.unpack_from('!HH', resp.data, offset + 2)
+                sfi = resp.data[offset + 6]
+                size, records, record_size = struct.unpack_from('!HHH', resp.data, offset + 7)
+                aid_len = resp.data[offset + 13]
+                aid = bytes(resp.data[offset + 14:offset + 30])[:aid_len]
+                files.append({
+                    'index': idx,
+                    'type': file_type,
+                    'fid': fid,
+                    'parent_fid': parent_fid,
+                    'sfi': sfi,
+                    'size': size,
+                    'records': records,
+                    'record_size': record_size,
+                    'aid': aid,
+                })
+                offset += 30
+            resp.parsed = files
+        return resp
+
+    def hf14a_cos_get_config(self):
+        resp = self.device.send_cmd_sync(Command.HF14A_COS_GET_CONFIG)
+        if resp.status == Status.SUCCESS and resp.data:
+            resp.parsed = {'write_enabled': bool(resp.data[0])}
+        return resp
+
+    def hf14a_cos_set_config(self, write_enabled: bool):
+        return self.device.send_cmd_sync(Command.HF14A_COS_SET_CONFIG,
+                                         bytes([1 if write_enabled else 0]))
+
     def hf14a_raw(self, options, resp_timeout_ms=100, data=[], bitlen=None):
         """
         Send raw cmd to 14a tag.
