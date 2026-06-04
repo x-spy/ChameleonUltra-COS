@@ -238,7 +238,7 @@ static bool cos_read_pool_chunks(void) {
     for (uint8_t i = 0; i < NFC_COS_MAX_CHUNKS && remaining > 0; i++) {
         uint16_t chunk_len = remaining > NFC_COS_FDS_CHUNK_DATA_SIZE ?
                              NFC_COS_FDS_CHUNK_DATA_SIZE : remaining;
-        uint16_t stored_len = chunk_len;
+        uint16_t stored_len = (uint16_t)((chunk_len + 3u) & ~3u);
         if (!fds_read_sync(map_info.id, cos_chunk_key(i), &stored_len, &pool[offset]) ||
                 stored_len < chunk_len) {
             NRF_LOG_ERROR("COS slot %d chunk %d missing (%d/%d)",
