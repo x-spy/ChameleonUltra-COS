@@ -264,6 +264,7 @@ static bool cos_write_pool_chunks(void) {
         if (remaining > 0) {
             uint16_t chunk_len = remaining > NFC_COS_FDS_CHUNK_DATA_SIZE ?
                                  NFC_COS_FDS_CHUNK_DATA_SIZE : remaining;
+            fds_delete_sync(map_info.id, key);
             if (!fds_write_sync(map_info.id, key, chunk_len, &pool[offset])) {
                 NRF_LOG_ERROR("COS slot %d chunk %d write failed", m_active_slot, i);
                 return false;
@@ -1344,6 +1345,7 @@ int nfc_cos_data_savecb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
 
     fds_slot_record_map_t map_info;
     get_fds_map_by_slot_sense_type_for_dump(m_active_slot, TAG_SENSE_HF, &map_info);
+    fds_delete_sync(map_info.id, map_info.key);
     if (!fds_write_sync(map_info.id, map_info.key, cos_header_size(), buffer->buffer)) {
         NRF_LOG_ERROR("COS slot %d header write failed", m_active_slot);
         return 0;
@@ -1363,6 +1365,7 @@ bool nfc_cos_data_factory(uint8_t slot, tag_specific_type_t tag_type) {
 
     fds_slot_record_map_t map_info;
     get_fds_map_by_slot_sense_type_for_dump(slot, TAG_SENSE_HF, &map_info);
+    fds_delete_sync(map_info.id, map_info.key);
     bool ret = fds_write_sync(map_info.id, map_info.key, sizeof(header), &header);
     if (ret && slot == tag_emulation_get_slot()) {
         tag_data_buffer_t *buffer = get_buffer_by_tag_type(tag_type);
