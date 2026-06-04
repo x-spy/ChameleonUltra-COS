@@ -7,10 +7,12 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 
 #include "app_status.h"
 #include "fds_util.h"
 #include "nfc_cos.h"
+#include "sdk_config.h"
 #include "tag_persistence.h"
 #include "utils.h"
 
@@ -20,10 +22,15 @@
 #include "nrf_log_default_backends.h"
 NRF_LOG_MODULE_REGISTER();
 
-#define NFC_COS_MAGIC       0x434F5331u /* "COS1" */
-#define NFC_COS_VERSION     1u
+#define NFC_COS_MAGIC       0x434F5332u /* "COS2" */
+#define NFC_COS_VERSION     2u
 #define NFC_COS_FID_MF      0x3F00u
 #define NFC_COS_INVALID_IDX 0xFFu
+#define NFC_COS_FDS_CHUNK_KEY_BASE 0x20u
+#define NFC_COS_MAX_CHUNKS  ((NFC_COS_DATA_POOL_SIZE + NFC_COS_FDS_CHUNK_DATA_SIZE - 1) / NFC_COS_FDS_CHUNK_DATA_SIZE)
+#define NFC_COS_POOL_ALIGN  4u
+#define NFC_COS_FDS_TOTAL_BYTES ((uint32_t)FDS_VIRTUAL_PAGES * (uint32_t)FDS_VIRTUAL_PAGE_SIZE * 4u)
+#define NFC_COS_STORAGE_BUDGET_BYTES ((NFC_COS_FDS_TOTAL_BYTES * NFC_COS_STORAGE_PERCENT) / 100u)
 
 #define SW_SUCCESS                 0x9000u
 #define SW_WARNING_EOF             0x6282u
@@ -68,9 +75,35 @@ typedef enum {
     COS_EF_RES_WRONG_TYPE,
 } cos_ef_res_t;
 
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t write_enabled;
+    uint8_t file_count;
+    uint8_t reserved;
+    uint16_t pool_used;
+    uint16_t pool_capacity;
+    nfc_tag_14a_coll_res_entity_t res_coll;
+    nfc_cos_file_entry_t files[NFC_COS_MAX_FILES];
+    uint8_t header_padding[2];
+} nfc_cos_persisted_header_t;
+
+typedef struct {
+    uint8_t idx;
+    uint16_t old_offset;
+    uint16_t old_alloc_len;
+    uint16_t new_offset;
+    uint16_t new_alloc_len;
+} cos_pool_move_t;
+
+STATIC_ASSERT(sizeof(nfc_cos_persisted_header_t) == offsetof(nfc_cos_information_t, data_pool));
+STATIC_ASSERT((sizeof(nfc_cos_persisted_header_t) % 4u) == 0);
+STATIC_ASSERT(sizeof(nfc_cos_information_t) <= UINT16_MAX);
+
 static nfc_cos_information_t *m_info = NULL;
 static nfc_tag_14a_coll_res_reference_t m_shadow_coll_res;
 
+static uint8_t m_active_slot = 0;
 static uint8_t m_selected_df = 0;
 static uint8_t m_selected_ef = NFC_COS_INVALID_IDX;
 static uint8_t m_challenge[32];
@@ -81,7 +114,6 @@ static bool m_cid_supported = false;
 static uint8_t m_cid = 0;
 static uint8_t m_resp_buf[NFC_COS_MAX_APDU];
 static uint8_t m_tx_buf[NFC_COS_MAX_APDU + 4];
-static uint8_t m_scratch_pool[NFC_COS_DATA_POOL_SIZE];
 
 static inline uint16_t be16(const uint8_t *p) {
     return ((uint16_t)p[0] << 8) | p[1];
@@ -90,6 +122,167 @@ static inline uint16_t be16(const uint8_t *p) {
 static inline void put_be16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)(v >> 8);
     p[1] = (uint8_t)v;
+}
+
+static inline void put_be32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)v;
+}
+
+static inline uint16_t cos_header_size(void) {
+    return sizeof(nfc_cos_persisted_header_t);
+}
+
+static inline uint8_t *cos_pool(void) {
+    return m_info == NULL ? NULL : m_info->data_pool;
+}
+
+static inline uint16_t align_pool_down(uint32_t value) {
+    value -= value % NFC_COS_POOL_ALIGN;
+    if (value > NFC_COS_DATA_POOL_SIZE) value = NFC_COS_DATA_POOL_SIZE;
+    return (uint16_t)value;
+}
+
+static uint16_t normalized_pool_capacity(uint16_t capacity) {
+    if (capacity < NFC_COS_MIN_DATA_POOL_SIZE) return NFC_COS_MIN_DATA_POOL_SIZE;
+    if (capacity > NFC_COS_DATA_POOL_SIZE) return NFC_COS_DATA_POOL_SIZE;
+    return align_pool_down(capacity);
+}
+
+static uint16_t current_pool_capacity(void) {
+    if (m_info == NULL) return NFC_COS_MIN_DATA_POOL_SIZE;
+    return normalized_pool_capacity(m_info->pool_capacity);
+}
+
+static uint32_t cos_min_slot_occupancy(void) {
+    return (uint32_t)cos_header_size() + NFC_COS_MIN_DATA_POOL_SIZE;
+}
+
+static uint32_t cos_slot_occupancy_from_capacity(uint16_t capacity) {
+    return (uint32_t)cos_header_size() + normalized_pool_capacity(capacity);
+}
+
+static uint16_t cos_chunk_key(uint8_t chunk_idx) {
+    return (uint16_t)(NFC_COS_FDS_CHUNK_KEY_BASE + chunk_idx);
+}
+
+static bool cos_header_is_valid(const nfc_cos_persisted_header_t *header) {
+    return header != NULL &&
+           header->magic == NFC_COS_MAGIC &&
+           header->version == NFC_COS_VERSION &&
+           header->files[0].active &&
+           header->files[0].fid == NFC_COS_FID_MF &&
+           header->pool_capacity >= NFC_COS_MIN_DATA_POOL_SIZE &&
+           header->pool_capacity <= NFC_COS_DATA_POOL_SIZE &&
+           header->pool_used <= header->pool_capacity;
+}
+
+static bool cos_read_slot_header(uint8_t slot, nfc_cos_persisted_header_t *header) {
+    if (header == NULL || slot >= TAG_MAX_SLOT_NUM) return false;
+    fds_slot_record_map_t map_info;
+    get_fds_map_by_slot_sense_type_for_dump(slot, TAG_SENSE_HF, &map_info);
+    uint16_t length = sizeof(*header);
+    memset(header, 0, sizeof(*header));
+    if (!fds_read_sync(map_info.id, map_info.key, &length, (uint8_t *)header)) {
+        return false;
+    }
+    return length >= sizeof(*header) && cos_header_is_valid(header);
+}
+
+static uint16_t cos_calculate_slot_pool_capacity(uint8_t slot, uint32_t *other_occupancy) {
+    uint32_t used_other = 0;
+    for (uint8_t i = 0; i < TAG_MAX_SLOT_NUM; i++) {
+        if (i == slot) continue;
+        nfc_cos_persisted_header_t header;
+        if (cos_read_slot_header(i, &header)) {
+            used_other += cos_slot_occupancy_from_capacity(header.pool_capacity);
+        } else {
+            used_other += cos_min_slot_occupancy();
+        }
+    }
+
+    if (other_occupancy != NULL) *other_occupancy = used_other;
+
+    uint32_t min_self = cos_min_slot_occupancy();
+    if (NFC_COS_STORAGE_BUDGET_BYTES <= used_other + min_self) {
+        return NFC_COS_MIN_DATA_POOL_SIZE;
+    }
+
+    uint32_t available_pool = NFC_COS_STORAGE_BUDGET_BYTES - used_other - cos_header_size();
+    if (available_pool < NFC_COS_MIN_DATA_POOL_SIZE) return NFC_COS_MIN_DATA_POOL_SIZE;
+    return align_pool_down(available_pool);
+}
+
+static void cos_refresh_dynamic_capacity(void) {
+    if (m_info == NULL) return;
+    uint16_t calculated = cos_calculate_slot_pool_capacity(m_active_slot, NULL);
+    uint16_t min_needed = normalized_pool_capacity(m_info->pool_used);
+    if (calculated < min_needed) calculated = min_needed;
+    m_info->pool_capacity = normalized_pool_capacity(calculated);
+}
+
+static bool cos_read_pool_chunks(void) {
+    if (m_info == NULL || m_info->pool_used > current_pool_capacity()) return false;
+    uint8_t *pool = cos_pool();
+    uint16_t capacity = current_pool_capacity();
+    memset(pool, 0, capacity);
+
+    fds_slot_record_map_t map_info;
+    get_fds_map_by_slot_sense_type_for_dump(m_active_slot, TAG_SENSE_HF, &map_info);
+
+    uint16_t remaining = m_info->pool_used;
+    uint16_t offset = 0;
+    for (uint8_t i = 0; i < NFC_COS_MAX_CHUNKS && remaining > 0; i++) {
+        uint16_t chunk_len = remaining > NFC_COS_FDS_CHUNK_DATA_SIZE ?
+                             NFC_COS_FDS_CHUNK_DATA_SIZE : remaining;
+        uint16_t stored_len = chunk_len;
+        if (!fds_read_sync(map_info.id, cos_chunk_key(i), &stored_len, &pool[offset]) ||
+                stored_len < chunk_len) {
+            NRF_LOG_ERROR("COS slot %d chunk %d missing (%d/%d)",
+                          m_active_slot, i, stored_len, chunk_len);
+            return false;
+        }
+        offset += chunk_len;
+        remaining -= chunk_len;
+    }
+    return remaining == 0;
+}
+
+static bool cos_write_pool_chunks(void) {
+    if (m_info == NULL || m_info->pool_used > current_pool_capacity()) return false;
+    uint8_t *pool = cos_pool();
+    fds_slot_record_map_t map_info;
+    get_fds_map_by_slot_sense_type_for_dump(m_active_slot, TAG_SENSE_HF, &map_info);
+
+    uint16_t remaining = m_info->pool_used;
+    uint16_t offset = 0;
+    for (uint8_t i = 0; i < NFC_COS_MAX_CHUNKS; i++) {
+        uint16_t key = cos_chunk_key(i);
+        if (remaining > 0) {
+            uint16_t chunk_len = remaining > NFC_COS_FDS_CHUNK_DATA_SIZE ?
+                                 NFC_COS_FDS_CHUNK_DATA_SIZE : remaining;
+            if (!fds_write_sync(map_info.id, key, chunk_len, &pool[offset])) {
+                NRF_LOG_ERROR("COS slot %d chunk %d write failed", m_active_slot, i);
+                return false;
+            }
+            offset += chunk_len;
+            remaining -= chunk_len;
+        } else {
+            fds_delete_sync(map_info.id, key);
+        }
+    }
+    return true;
+}
+
+void nfc_cos_storage_delete(uint8_t slot) {
+    if (slot >= TAG_MAX_SLOT_NUM) return;
+    fds_slot_record_map_t map_info;
+    get_fds_map_by_slot_sense_type_for_dump(slot, TAG_SENSE_HF, &map_info);
+    for (uint8_t i = 0; i < NFC_COS_MAX_CHUNKS; i++) {
+        fds_delete_sync(map_info.id, cos_chunk_key(i));
+    }
 }
 
 static uint16_t append_sw(uint8_t *resp, uint16_t len, uint16_t resp_max, uint16_t sw) {
@@ -168,10 +361,11 @@ static uint8_t first_free_file(void) {
 
 static uint16_t record_count(const nfc_cos_file_entry_t *e) {
     if (e->type != NFC_COS_FILE_TYPE_EF_RECORD || e->data_len == 0) return 0;
+    uint8_t *pool = cos_pool();
     uint16_t off = 0;
     uint16_t count = 0;
     while (off + 2 <= e->data_len) {
-        uint16_t len = be16(&m_info->data_pool[e->data_offset + off]);
+        uint16_t len = be16(&pool[e->data_offset + off]);
         if (off + 2 + len > e->data_len) break;
         off += 2 + len;
         count++;
@@ -181,10 +375,11 @@ static uint16_t record_count(const nfc_cos_file_entry_t *e) {
 
 static uint16_t record_payload_len(const nfc_cos_file_entry_t *e) {
     if (e->type != NFC_COS_FILE_TYPE_EF_RECORD || e->data_len == 0) return 0;
+    uint8_t *pool = cos_pool();
     uint16_t off = 0;
     uint16_t total = 0;
     while (off + 2 <= e->data_len) {
-        uint16_t len = be16(&m_info->data_pool[e->data_offset + off]);
+        uint16_t len = be16(&pool[e->data_offset + off]);
         if (off + 2 + len > e->data_len) break;
         total += len;
         off += 2 + len;
@@ -197,8 +392,9 @@ static bool find_record(const nfc_cos_file_entry_t *e, uint8_t record_no,
     if (e == NULL || e->type != NFC_COS_FILE_TYPE_EF_RECORD || record_no == 0) return false;
     uint16_t off = 0;
     uint8_t current = 1;
+    uint8_t *pool = cos_pool();
     while (off + 2 <= e->data_len) {
-        uint16_t len = be16(&m_info->data_pool[e->data_offset + off]);
+        uint16_t len = be16(&pool[e->data_offset + off]);
         if (off + 2 + len > e->data_len) break;
         if (current == record_no) {
             if (record_off != NULL) *record_off = off;
@@ -213,31 +409,70 @@ static bool find_record(const nfc_cos_file_entry_t *e, uint8_t record_no,
 
 static bool compact_pool_with_resize(uint8_t resize_idx, uint16_t new_alloc_len) {
     if (m_info == NULL) return false;
+    uint8_t *pool = cos_pool();
     uint16_t used = 0;
-    memset(m_scratch_pool, 0, sizeof(m_scratch_pool));
+    bool move_upward = false;
+    uint8_t move_count = 0;
+    cos_pool_move_t moves[NFC_COS_MAX_FILES];
 
     for (uint8_t i = 0; i < NFC_COS_MAX_FILES; i++) {
         nfc_cos_file_entry_t *e = &m_info->files[i];
         if (!e->active || !is_ef_type(e->type)) continue;
-        uint16_t alloc_len = (i == resize_idx) ? new_alloc_len : e->alloc_len;
-        if (alloc_len == 0) {
-            e->data_offset = 0;
-            e->alloc_len = 0;
-            continue;
+        uint8_t pos = move_count++;
+        moves[pos].idx = i;
+        moves[pos].old_offset = e->data_offset;
+        moves[pos].old_alloc_len = e->alloc_len;
+    }
+
+    for (uint8_t i = 1; i < move_count; i++) {
+        cos_pool_move_t item = moves[i];
+        int j = (int)i - 1;
+        while (j >= 0 && moves[j].old_offset > item.old_offset) {
+            moves[j + 1] = moves[j];
+            j--;
         }
-        if ((uint32_t)used + alloc_len > NFC_COS_DATA_POOL_SIZE) return false;
-        uint16_t copy_len = e->data_len;
-        if (copy_len > alloc_len) copy_len = alloc_len;
-        if (copy_len > 0) {
-            memcpy(&m_scratch_pool[used], &m_info->data_pool[e->data_offset], copy_len);
-        }
-        e->data_offset = used;
-        e->alloc_len = alloc_len;
-        if (e->data_len > alloc_len) e->data_len = alloc_len;
+        moves[j + 1] = item;
+    }
+
+    for (uint8_t i = 0; i < move_count; i++) {
+        nfc_cos_file_entry_t *e = &m_info->files[moves[i].idx];
+        uint16_t alloc_len = (moves[i].idx == resize_idx) ? new_alloc_len : e->alloc_len;
+        if ((uint32_t)used + alloc_len > current_pool_capacity()) return false;
+        moves[i].new_offset = used;
+        moves[i].new_alloc_len = alloc_len;
+        if (alloc_len != 0 && used > moves[i].old_offset) move_upward = true;
         used += alloc_len;
     }
 
-    memcpy(m_info->data_pool, m_scratch_pool, sizeof(m_info->data_pool));
+    if (move_upward) {
+        for (int i = (int)move_count - 1; i >= 0; i--) {
+            nfc_cos_file_entry_t *e = &m_info->files[moves[i].idx];
+            uint16_t copy_len = e->data_len;
+            if (copy_len > moves[i].new_alloc_len) copy_len = moves[i].new_alloc_len;
+            if (copy_len > 0 && moves[i].old_alloc_len > 0) {
+                memmove(&pool[moves[i].new_offset], &pool[moves[i].old_offset], copy_len);
+            }
+            e->data_offset = moves[i].new_alloc_len == 0 ? 0 : moves[i].new_offset;
+            e->alloc_len = moves[i].new_alloc_len;
+            if (e->data_len > e->alloc_len) e->data_len = e->alloc_len;
+        }
+    } else {
+        for (uint8_t i = 0; i < move_count; i++) {
+            nfc_cos_file_entry_t *e = &m_info->files[moves[i].idx];
+            uint16_t copy_len = e->data_len;
+            if (copy_len > moves[i].new_alloc_len) copy_len = moves[i].new_alloc_len;
+            if (copy_len > 0 && moves[i].old_alloc_len > 0) {
+                memmove(&pool[moves[i].new_offset], &pool[moves[i].old_offset], copy_len);
+            }
+            e->data_offset = moves[i].new_alloc_len == 0 ? 0 : moves[i].new_offset;
+            e->alloc_len = moves[i].new_alloc_len;
+            if (e->data_len > e->alloc_len) e->data_len = e->alloc_len;
+        }
+    }
+
+    if (used < current_pool_capacity()) {
+        memset(&pool[used], 0, current_pool_capacity() - used);
+    }
     m_info->pool_used = used;
     return true;
 }
@@ -289,54 +524,64 @@ static uint8_t delete_file_recursive(uint16_t fid) {
     return STATUS_SUCCESS;
 }
 
-static void set_factory_coll_res(nfc_cos_information_t *info) {
-    info->res_coll.size = NFC_TAG_14A_UID_DOUBLE_SIZE;
-    info->res_coll.atqa[0] = 0x04;
-    info->res_coll.atqa[1] = 0x00;
-    info->res_coll.sak[0] = 0x20;
-    info->res_coll.uid[0] = 0x04;
-    info->res_coll.uid[1] = 0xC0;
-    info->res_coll.uid[2] = 0x5E;
-    info->res_coll.uid[3] = 0x00;
-    info->res_coll.uid[4] = 0x00;
-    info->res_coll.uid[5] = 0x00;
-    info->res_coll.uid[6] = 0x01;
+static void set_factory_coll_res_entity(nfc_tag_14a_coll_res_entity_t *res_coll) {
+    res_coll->size = NFC_TAG_14A_UID_DOUBLE_SIZE;
+    res_coll->atqa[0] = 0x04;
+    res_coll->atqa[1] = 0x00;
+    res_coll->sak[0] = 0x20;
+    res_coll->uid[0] = 0x04;
+    res_coll->uid[1] = 0xC0;
+    res_coll->uid[2] = 0x5E;
+    res_coll->uid[3] = 0x00;
+    res_coll->uid[4] = 0x00;
+    res_coll->uid[5] = 0x00;
+    res_coll->uid[6] = 0x01;
 
     static const uint8_t default_ats[] = {
         0x10, 0x78, 0x80, 0x70, 0x02, 0x00,
         0x31, 0xC1, 0x64, 0x09, 0x97, 0x61,
         0x26, 0x00, 0x90, 0x00
     };
-    info->res_coll.ats.length = sizeof(default_ats);
-    memcpy(info->res_coll.ats.data, default_ats, sizeof(default_ats));
+    res_coll->ats.length = sizeof(default_ats);
+    memcpy(res_coll->ats.data, default_ats, sizeof(default_ats));
 }
 
-static void set_factory_fs(nfc_cos_information_t *info) {
-    memset(info->files, 0, sizeof(info->files));
-    memset(info->data_pool, 0, sizeof(info->data_pool));
-    info->pool_used = 0;
-    info->file_count = 1;
+static void set_factory_header(nfc_cos_persisted_header_t *header, uint16_t pool_capacity) {
+    memset(header, 0, sizeof(*header));
+    header->magic = NFC_COS_MAGIC;
+    header->version = NFC_COS_VERSION;
+    header->write_enabled = 1;
+    header->pool_capacity = normalized_pool_capacity(pool_capacity);
+    header->pool_used = 0;
+    header->file_count = 1;
+    set_factory_coll_res_entity(&header->res_coll);
 
-    nfc_cos_file_entry_t *mf = &info->files[0];
+    nfc_cos_file_entry_t *mf = &header->files[0];
     mf->active = 1;
     mf->fid = NFC_COS_FID_MF;
     mf->parent_fid = 0x0000;
     mf->type = NFC_COS_FILE_TYPE_MF;
 }
 
+static void set_factory_fs(nfc_cos_information_t *info, uint16_t pool_capacity) {
+    set_factory_header((nfc_cos_persisted_header_t *)info, pool_capacity);
+    memset(info->data_pool, 0, current_pool_capacity());
+}
+
 static void ensure_valid_fs(void) {
     if (m_info == NULL) return;
     if (m_info->magic == NFC_COS_MAGIC && m_info->version == NFC_COS_VERSION &&
-            m_info->files[0].active && m_info->files[0].fid == NFC_COS_FID_MF) {
+            m_info->files[0].active && m_info->files[0].fid == NFC_COS_FID_MF &&
+            m_info->pool_capacity >= NFC_COS_MIN_DATA_POOL_SIZE &&
+            m_info->pool_capacity <= NFC_COS_DATA_POOL_SIZE &&
+            m_info->pool_used <= m_info->pool_capacity) {
+        m_info->pool_capacity = normalized_pool_capacity(m_info->pool_capacity);
+        cos_refresh_dynamic_capacity();
         return;
     }
 
     memset(m_info, 0, sizeof(*m_info));
-    m_info->magic = NFC_COS_MAGIC;
-    m_info->version = NFC_COS_VERSION;
-    m_info->write_enabled = 1;
-    set_factory_coll_res(m_info);
-    set_factory_fs(m_info);
+    set_factory_fs(m_info, cos_calculate_slot_pool_capacity(m_active_slot, NULL));
 }
 
 static bool parse_short_apdu(const uint8_t *apdu, uint16_t len, cos_apdu_case_t *parsed) {
@@ -554,7 +799,7 @@ static uint8_t update_record_by_index(uint8_t idx, uint8_t record_no,
     }
 
     e = &m_info->files[idx];
-    uint8_t *base = &m_info->data_pool[e->data_offset];
+    uint8_t *base = &cos_pool()[e->data_offset];
     uint16_t old_tail_off = record_off + old_entry_len;
     uint16_t new_tail_off = record_off + new_entry_len;
     uint16_t tail_len = e->data_len - old_tail_off;
@@ -584,7 +829,7 @@ static uint16_t apdu_read_binary(const uint8_t *apdu, const cos_apdu_case_t *par
     if (le > resp_max - 2) le = resp_max - 2;
     uint16_t available = e->data_len - offset;
     uint16_t out_len = le <= available ? le : available;
-    if (out_len > 0) memcpy(resp, &m_info->data_pool[e->data_offset + offset], out_len);
+    if (out_len > 0) memcpy(resp, &cos_pool()[e->data_offset + offset], out_len);
     return append_sw(resp, out_len, resp_max, SW_SUCCESS);
 }
 
@@ -606,10 +851,11 @@ static uint16_t apdu_update_binary(const uint8_t *apdu, const cos_apdu_case_t *p
     if (!ensure_file_capacity(idx, new_len)) {
         return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
     }
+    e = &m_info->files[idx];
     if (offset > e->data_len) {
-        memset(&m_info->data_pool[e->data_offset + e->data_len], 0, offset - e->data_len);
+        memset(&cos_pool()[e->data_offset + e->data_len], 0, offset - e->data_len);
     }
-    memcpy(&m_info->data_pool[e->data_offset + offset], parsed->data, parsed->lc);
+    memcpy(&cos_pool()[e->data_offset + offset], parsed->data, parsed->lc);
     if (new_len > e->data_len) e->data_len = new_len;
     return sw_only(resp, resp_max, SW_SUCCESS);
 }
@@ -627,7 +873,7 @@ static uint16_t apdu_read_record(const uint8_t *apdu, const cos_apdu_case_t *par
     uint16_t len = 0;
     if (find_record(e, apdu[2], &off, &len)) {
         return append_record_data(resp, resp_max,
-                                  &m_info->data_pool[e->data_offset + off + 2],
+                                  &cos_pool()[e->data_offset + off + 2],
                                   len, parsed);
     }
     return sw_only(resp, resp_max, SW_RECORD_NOT_FOUND);
@@ -758,9 +1004,9 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
         if (data_len > UINT16_MAX - 2) return STATUS_MEM_ERR;
         storage_len = data_len + 2;
     }
-    if (is_ef_type(type) && storage_len > NFC_COS_DATA_POOL_SIZE - m_info->pool_used) {
+    if (is_ef_type(type) && storage_len > current_pool_capacity() - m_info->pool_used) {
         if (!compact_pool_with_resize(NFC_COS_INVALID_IDX, 0) ||
-                storage_len > NFC_COS_DATA_POOL_SIZE - m_info->pool_used) {
+                storage_len > current_pool_capacity() - m_info->pool_used) {
             return STATUS_MEM_ERR;
         }
     }
@@ -780,10 +1026,10 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
         e->data_len = storage_len;
         e->alloc_len = storage_len;
         if (type == NFC_COS_FILE_TYPE_EF_RECORD) {
-            put_be16(&m_info->data_pool[e->data_offset], data_len);
-            memcpy(&m_info->data_pool[e->data_offset + 2], data, data_len);
+            put_be16(&cos_pool()[e->data_offset], data_len);
+            memcpy(&cos_pool()[e->data_offset + 2], data, data_len);
         } else {
-            memcpy(&m_info->data_pool[e->data_offset], data, data_len);
+            memcpy(&cos_pool()[e->data_offset], data, data_len);
         }
         m_info->pool_used += storage_len;
     }
@@ -811,7 +1057,7 @@ uint8_t nfc_cos_read_file(uint16_t fid, uint16_t offset, uint16_t length,
     uint16_t available = e->data_len - offset;
     if (length == 0 || length > available) length = available;
     if (length > out_max) length = out_max;
-    memcpy(out, &m_info->data_pool[e->data_offset + offset], length);
+    memcpy(out, &cos_pool()[e->data_offset + offset], length);
     *out_len = length;
     return STATUS_SUCCESS;
 }
@@ -830,9 +1076,9 @@ uint8_t nfc_cos_write_file(uint16_t fid, uint16_t offset,
     if (!ensure_file_capacity(idx, new_len)) return STATUS_MEM_ERR;
     nfc_cos_file_entry_t *e = &m_info->files[idx];
     if (offset > e->data_len) {
-        memset(&m_info->data_pool[e->data_offset + e->data_len], 0, offset - e->data_len);
+        memset(&cos_pool()[e->data_offset + e->data_len], 0, offset - e->data_len);
     }
-    memcpy(&m_info->data_pool[e->data_offset + offset], data, data_len);
+    memcpy(&cos_pool()[e->data_offset + offset], data, data_len);
     if (new_len > e->data_len) e->data_len = new_len;
     return STATUS_SUCCESS;
 }
@@ -852,8 +1098,9 @@ uint8_t nfc_cos_append_record(uint16_t fid, const uint8_t *data, uint16_t data_l
     uint16_t old_len = e->data_len;
     uint16_t new_len = old_len + 2 + data_len;
     if (new_len < old_len || !ensure_file_capacity(idx, new_len)) return STATUS_MEM_ERR;
-    put_be16(&m_info->data_pool[e->data_offset + old_len], data_len);
-    memcpy(&m_info->data_pool[e->data_offset + old_len + 2], data, data_len);
+    e = &m_info->files[idx];
+    put_be16(&cos_pool()[e->data_offset + old_len], data_len);
+    memcpy(&cos_pool()[e->data_offset + old_len + 2], data, data_len);
     e->data_len = new_len;
     return STATUS_SUCCESS;
 }
@@ -887,6 +1134,31 @@ uint16_t nfc_cos_list_files(uint8_t *out, uint16_t out_max) {
     }
     out[0] = count;
     return off;
+}
+
+uint16_t nfc_cos_storage_info(uint8_t *out, uint16_t out_max) {
+    if (m_info == NULL || out == NULL || out_max < NFC_COS_STORAGE_INFO_SIZE) return 0;
+    ensure_valid_fs();
+    uint32_t other_occupancy = 0;
+    uint16_t calculated = cos_calculate_slot_pool_capacity(m_active_slot, &other_occupancy);
+    uint16_t capacity = current_pool_capacity();
+    uint32_t slot_occupancy = cos_slot_occupancy_from_capacity(capacity);
+
+    put_be32(&out[0], NFC_COS_FDS_TOTAL_BYTES);
+    put_be32(&out[4], NFC_COS_STORAGE_BUDGET_BYTES);
+    put_be32(&out[8], other_occupancy);
+    put_be32(&out[12], slot_occupancy);
+    put_be16(&out[16], cos_header_size());
+    put_be16(&out[18], NFC_COS_MIN_DATA_POOL_SIZE);
+    put_be16(&out[20], NFC_COS_DATA_POOL_SIZE);
+    put_be16(&out[22], capacity);
+    put_be16(&out[24], m_info->pool_used);
+    put_be16(&out[26], NFC_COS_FDS_CHUNK_DATA_SIZE);
+    put_be16(&out[28], NFC_COS_MAX_CHUNKS);
+    put_be16(&out[30], calculated);
+    out[32] = m_info->file_count;
+    out[33] = m_active_slot;
+    return NFC_COS_STORAGE_INFO_SIZE;
 }
 
 uint8_t nfc_cos_set_write_enabled(bool enabled) {
@@ -1036,8 +1308,14 @@ int nfc_cos_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
         NRF_LOG_ERROR("COS loadcb: buffer too small (%d < %d)", buffer->length, info_size);
         return info_size;
     }
+    m_active_slot = tag_emulation_get_slot();
     m_info = (nfc_cos_information_t *)buffer->buffer;
     ensure_valid_fs();
+    if (!cos_read_pool_chunks()) {
+        NRF_LOG_WARNING("COS slot %d pool chunks invalid, resetting filesystem", m_active_slot);
+        set_factory_fs(m_info, cos_calculate_slot_pool_capacity(m_active_slot, NULL));
+        nfc_cos_storage_delete(m_active_slot);
+    }
     nfc_cos_reset_handler();
 
     nfc_tag_14a_handler_t handler = {
@@ -1046,35 +1324,40 @@ int nfc_cos_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
         .cb_reset = nfc_cos_reset_handler,
     };
     nfc_tag_14a_set_handler(&handler);
-    NRF_LOG_INFO("COS loadcb OK: files=%d pool=%d write=%d",
-                 m_info->file_count, m_info->pool_used, m_info->write_enabled);
-    return info_size;
+    NRF_LOG_INFO("COS loadcb OK: files=%d pool=%d/%d write=%d",
+                 m_info->file_count, m_info->pool_used, m_info->pool_capacity, m_info->write_enabled);
+    return cos_header_size();
 }
 
 int nfc_cos_data_savecb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
     UNUSED_PARAMETER(type);
-    UNUSED_PARAMETER(buffer);
-    return sizeof(nfc_cos_information_t);
+    if (buffer == NULL || buffer->buffer == NULL || buffer->length < sizeof(nfc_cos_information_t)) {
+        return 0;
+    }
+    m_info = (nfc_cos_information_t *)buffer->buffer;
+    m_active_slot = tag_emulation_get_slot();
+    ensure_valid_fs();
+    if (!cos_write_pool_chunks()) {
+        return 0;
+    }
+    return cos_header_size();
 }
 
 bool nfc_cos_data_factory(uint8_t slot, tag_specific_type_t tag_type) {
     if (tag_type != TAG_TYPE_HF14A_COS) return false;
 
-    nfc_cos_information_t info;
-    memset(&info, 0, sizeof(info));
-    info.magic = NFC_COS_MAGIC;
-    info.version = NFC_COS_VERSION;
-    info.write_enabled = 1;
-    set_factory_coll_res(&info);
-    set_factory_fs(&info);
+    nfc_cos_persisted_header_t header;
+    set_factory_header(&header, cos_calculate_slot_pool_capacity(slot, NULL));
+    nfc_cos_storage_delete(slot);
 
     fds_slot_record_map_t map_info;
     get_fds_map_by_slot_sense_type_for_dump(slot, TAG_SENSE_HF, &map_info);
-    bool ret = fds_write_sync(map_info.id, map_info.key, sizeof(info), &info);
+    bool ret = fds_write_sync(map_info.id, map_info.key, sizeof(header), &header);
     if (ret && slot == tag_emulation_get_slot()) {
         tag_data_buffer_t *buffer = get_buffer_by_tag_type(tag_type);
-        if (buffer != NULL && buffer->length >= sizeof(info)) {
-            memcpy(buffer->buffer, &info, sizeof(info));
+        if (buffer != NULL && buffer->length >= sizeof(nfc_cos_information_t)) {
+            memset(buffer->buffer, 0, buffer->length);
+            memcpy(buffer->buffer, &header, sizeof(header));
             nfc_cos_data_loadcb(tag_type, buffer);
         }
     }

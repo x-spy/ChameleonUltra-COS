@@ -55,7 +55,7 @@ static uint8_t m_tag_data_buffer_lf[20];  // LF card data buffer
 static uint16_t m_tag_data_lf_crc;
 static tag_data_buffer_t m_tag_data_lf = {sizeof(m_tag_data_buffer_lf), m_tag_data_buffer_lf, &m_tag_data_lf_crc};
 
-static uint8_t m_tag_data_buffer_hf[4600];  // HF card data buffer
+static uint8_t m_tag_data_buffer_hf[sizeof(nfc_cos_information_t)];  // HF card data buffer
 static uint16_t m_tag_data_hf_crc;
 static tag_data_buffer_t m_tag_data_hf = {sizeof(m_tag_data_buffer_hf), m_tag_data_buffer_hf, &m_tag_data_hf_crc};
 
@@ -312,6 +312,9 @@ static void delete_data_by_tag_type(uint8_t slot, tag_sense_type_t sense_type) {
     fds_slot_record_map_t map_info;
     get_fds_map_by_slot_sense_type_for_dump(slot, sense_type, &map_info);
     int count = fds_delete_sync(map_info.id, map_info.key);
+    if (sense_type == TAG_SENSE_HF) {
+        nfc_cos_storage_delete(slot);
+    }
     NRF_LOG_INFO("Slot %d delete sense type %d data, record count: %d", slot, sense_type, count);
 }
 

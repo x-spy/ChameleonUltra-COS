@@ -192,6 +192,7 @@
 #define DATA_CMD_HF14A_COS_GET_CONFIG           (6106)
 #define DATA_CMD_HF14A_COS_SET_CONFIG           (6107)
 #define DATA_CMD_HF14A_COS_RECORD_APPEND        (6108)
+#define DATA_CMD_HF14A_COS_STORAGE              (6109)
 
 #define DATA_CMD_EM410X_SET_EMU_ID              (5000)
 #define DATA_CMD_EM410X_GET_EMU_ID              (5001)

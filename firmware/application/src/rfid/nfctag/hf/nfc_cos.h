@@ -17,9 +17,13 @@
 #define NFC_COS_MAX_APDU              260
 #define NFC_COS_MAX_FILES             32
 #define NFC_COS_MAX_AID_LEN           16
-#define NFC_COS_DATA_POOL_SIZE        3200
+#define NFC_COS_MIN_DATA_POOL_SIZE    3200
+#define NFC_COS_DATA_POOL_SIZE        64000
+#define NFC_COS_FDS_CHUNK_DATA_SIZE   7600
+#define NFC_COS_STORAGE_PERCENT       90
 #define NFC_COS_LIST_ENTRY_SIZE       30
 #define NFC_COS_LIST_MAX_LEN          (1 + (NFC_COS_MAX_FILES * NFC_COS_LIST_ENTRY_SIZE))
+#define NFC_COS_STORAGE_INFO_SIZE     34
 
 typedef enum {
     NFC_COS_FILE_TYPE_MF        = 0x01,
@@ -49,8 +53,10 @@ typedef struct {
     uint8_t file_count;
     uint8_t reserved;
     uint16_t pool_used;
+    uint16_t pool_capacity;
     nfc_tag_14a_coll_res_entity_t res_coll;
     nfc_cos_file_entry_t files[NFC_COS_MAX_FILES];
+    uint8_t header_padding[2];
     uint8_t data_pool[NFC_COS_DATA_POOL_SIZE];
 } nfc_cos_information_t;
 
@@ -76,6 +82,8 @@ uint8_t nfc_cos_write_file(uint16_t fid, uint16_t offset,
                            const uint8_t *data, uint16_t data_len);
 uint8_t nfc_cos_append_record(uint16_t fid, const uint8_t *data, uint16_t data_len);
 uint16_t nfc_cos_list_files(uint8_t *out, uint16_t out_max);
+uint16_t nfc_cos_storage_info(uint8_t *out, uint16_t out_max);
+void nfc_cos_storage_delete(uint8_t slot);
 uint8_t nfc_cos_set_write_enabled(bool enabled);
 bool nfc_cos_is_write_enabled(void);
 

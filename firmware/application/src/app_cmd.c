@@ -3052,6 +3052,16 @@ static data_frame_tx_t *cmd_processor_hf14a_cos_record_append(uint16_t cmd, uint
     status = nfc_cos_append_record(fid, &data[4], data_len);
     return data_frame_make(cmd, status, 0, NULL);
 }
+
+static data_frame_tx_t *cmd_processor_hf14a_cos_storage(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
+    UNUSED_PARAMETER(status);
+    UNUSED_PARAMETER(data);
+    if (!active_hf_slot_is_cos()) return data_frame_make(cmd, STATUS_INVALID_SLOT_TYPE, 0, NULL);
+    if (length != 0) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    uint8_t resp[NFC_COS_STORAGE_INFO_SIZE];
+    uint16_t resp_len = nfc_cos_storage_info(resp, sizeof(resp));
+    return data_frame_make(cmd, resp_len > 0 ? STATUS_SUCCESS : STATUS_PAR_ERR, resp_len, resp_len > 0 ? resp : NULL);
+}
 #endif
 static cmd_data_map_t m_data_cmd_map[] = {
     {    DATA_CMD_GET_APP_VERSION,              NULL,                        cmd_processor_get_app_version,               NULL                   },
@@ -3219,6 +3229,7 @@ static cmd_data_map_t m_data_cmd_map[] = {
     {    DATA_CMD_HF14A_COS_GET_CONFIG,           NULL,                        cmd_processor_hf14a_cos_get_config,          NULL                   },
     {    DATA_CMD_HF14A_COS_SET_CONFIG,           NULL,                        cmd_processor_hf14a_cos_set_config,          NULL                   },
     {    DATA_CMD_HF14A_COS_RECORD_APPEND,        NULL,                        cmd_processor_hf14a_cos_record_append,       NULL                   },
+    {    DATA_CMD_HF14A_COS_STORAGE,              NULL,                        cmd_processor_hf14a_cos_storage,             NULL                   },
     /* HF14A scan keeping field alive */
     {    DATA_CMD_HF14A_SCAN_KEEP,                before_hf_reader_run,        cmd_processor_hf14a_scan_keep,               NULL                   },
 #endif

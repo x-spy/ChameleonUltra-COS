@@ -417,6 +417,30 @@ class ChameleonCMD:
         return self.device.send_cmd_sync(Command.HF14A_COS_SET_CONFIG,
                                          bytes([1 if write_enabled else 0]))
 
+    def hf14a_cos_storage(self):
+        resp = self.device.send_cmd_sync(Command.HF14A_COS_STORAGE)
+        if resp.status == Status.SUCCESS and len(resp.data) >= 34:
+            (fds_total, budget, other_occupancy, slot_occupancy,
+             header_size, min_pool, max_pool, pool_capacity, pool_used,
+             chunk_size, max_chunks, calculated) = struct.unpack('!IIIIHHHHHHHH', resp.data[:32])
+            resp.parsed = {
+                'fds_total_bytes': fds_total,
+                'cos_budget_bytes': budget,
+                'other_slots_occupancy': other_occupancy,
+                'slot_occupancy': slot_occupancy,
+                'header_size': header_size,
+                'min_pool': min_pool,
+                'max_pool': max_pool,
+                'pool_capacity': pool_capacity,
+                'pool_used': pool_used,
+                'chunk_size': chunk_size,
+                'max_chunks': max_chunks,
+                'calculated_pool_capacity': calculated,
+                'file_count': resp.data[32],
+                'active_slot': resp.data[33] + 1,
+            }
+        return resp
+
     def hf14a_raw(self, options, resp_timeout_ms=100, data=[], bitlen=None):
         """
         Send raw cmd to 14a tag.

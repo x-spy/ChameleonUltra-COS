@@ -9123,6 +9123,33 @@ class COSConfig(COSSlotUnit):
         print(f" {CG}Write enabled:{C0} {bool(resp.parsed['write_enabled'])}")
 
 
+@cos.command('storage')
+class COSStorage(COSSlotUnit):
+    def args_parser(self) -> ArgumentParserNoExit:
+        parser = ArgumentParserNoExit()
+        parser.description = 'Show COS dynamic storage allocation'
+        self.add_slot_args(parser)
+        return parser
+
+    def on_exec(self, args: argparse.Namespace):
+        if self._slot_hf_type() != TagSpecificType.HF14A_COS:
+            print(f' {CR}Active slot is not COS.{C0}')
+            return
+        resp = self.cmd.hf14a_cos_storage()
+        if resp.status != Status.SUCCESS:
+            print(f' {CR}Failed: {Status(resp.status)}{C0}')
+            return
+        info = resp.parsed
+        print(f" {CG}FDS total:{C0} {info['fds_total_bytes']} bytes")
+        print(f" {CG}COS budget:{C0} {info['cos_budget_bytes']} bytes ({info['cos_budget_bytes'] * 100 // info['fds_total_bytes']}%)")
+        print(f" {CG}Other slots reserved/used:{C0} {info['other_slots_occupancy']} bytes")
+        print(f" {CG}Active slot occupancy:{C0} {info['slot_occupancy']} bytes")
+        print(f" {CG}Pool:{C0} {info['pool_used']} / {info['pool_capacity']} bytes "
+              f"(min {info['min_pool']}, max {info['max_pool']})")
+        print(f" {CG}Header:{C0} {info['header_size']} bytes  "
+              f"{CG}Chunks:{C0} {info['max_chunks']} x {info['chunk_size']} bytes")
+
+
 @cos.command('anticoll')
 class COSAntiColl(COSSlotUnit):
     def args_parser(self) -> ArgumentParserNoExit:

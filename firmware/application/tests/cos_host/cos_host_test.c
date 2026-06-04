@@ -58,8 +58,13 @@ int main(void) {
     g_active_buffer = &buffer;
 
     srand(1);
-    assert(nfc_cos_data_loadcb(TAG_TYPE_HF14A_COS, &buffer) == (int)sizeof(info));
+    assert(nfc_cos_data_loadcb(TAG_TYPE_HF14A_COS, &buffer) > 0);
     assert(nfc_cos_is_write_enabled());
+
+    uint8_t storage[NFC_COS_STORAGE_INFO_SIZE];
+    assert(nfc_cos_storage_info(storage, sizeof(storage)) == NFC_COS_STORAGE_INFO_SIZE);
+    uint16_t pool_capacity = ((uint16_t)storage[22] << 8) | storage[23];
+    assert(pool_capacity >= NFC_COS_MIN_DATA_POOL_SIZE);
 
     const uint8_t bin_data[] = {0x10, 0x11, 0x12, 0x13};
     assert(nfc_cos_create_file(0x3F00, 0x0101, NFC_COS_FILE_TYPE_EF_BINARY,
@@ -84,6 +89,19 @@ int main(void) {
     len = nfc_cos_process_apdu(read_after, sizeof(read_after), resp, sizeof(resp));
     const uint8_t read_after_want[] = {0x10, 0x11, 0xAA, 0xBB, 0xCC, 0x90, 0x00};
     expect_hex(resp, len, read_after_want, sizeof(read_after_want));
+
+    static uint8_t big_data[5000];
+    uint8_t big_read[24];
+    uint16_t big_read_len = 0;
+    for (uint16_t i = 0; i < sizeof(big_data); i++) big_data[i] = (uint8_t)(i & 0xFF);
+    assert(nfc_cos_create_file(0x3F00, 0x0202, NFC_COS_FILE_TYPE_EF_BINARY,
+                               6, 0, NULL, 0, big_data, sizeof(big_data)) == STATUS_SUCCESS);
+    assert(nfc_cos_read_file(0x0202, 4090, sizeof(big_read),
+                             big_read, &big_read_len, sizeof(big_read)) == STATUS_SUCCESS);
+    assert(big_read_len == sizeof(big_read));
+    for (uint16_t i = 0; i < sizeof(big_read); i++) {
+        assert(big_read[i] == (uint8_t)((4090 + i) & 0xFF));
+    }
 
     uint8_t rec[18];
     for (uint8_t i = 0; i < sizeof(rec); i++) rec[i] = (uint8_t)(i + 1);
