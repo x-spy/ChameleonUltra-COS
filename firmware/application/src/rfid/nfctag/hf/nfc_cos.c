@@ -1071,6 +1071,13 @@ bool nfc_cos_data_factory(uint8_t slot, tag_specific_type_t tag_type) {
     fds_slot_record_map_t map_info;
     get_fds_map_by_slot_sense_type_for_dump(slot, TAG_SENSE_HF, &map_info);
     bool ret = fds_write_sync(map_info.id, map_info.key, sizeof(info), &info);
+    if (ret && slot == tag_emulation_get_slot()) {
+        tag_data_buffer_t *buffer = get_buffer_by_tag_type(tag_type);
+        if (buffer != NULL && buffer->length >= sizeof(info)) {
+            memcpy(buffer->buffer, &info, sizeof(info));
+            nfc_cos_data_loadcb(tag_type, buffer);
+        }
+    }
     NRF_LOG_INFO("COS factory slot %d: %s", slot, ret ? "OK" : "FAIL");
     return ret;
 }

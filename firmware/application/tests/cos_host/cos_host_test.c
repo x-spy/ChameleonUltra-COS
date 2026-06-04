@@ -8,6 +8,17 @@
 #include "app_status.h"
 #include "nfc_cos.h"
 
+static tag_data_buffer_t *g_active_buffer;
+
+tag_data_buffer_t *get_buffer_by_tag_type(tag_specific_type_t type) {
+    (void)type;
+    return g_active_buffer;
+}
+
+uint8_t tag_emulation_get_slot(void) {
+    return 0;
+}
+
 void nfc_tag_14a_set_handler(nfc_tag_14a_handler_t *handler) {
     (void)handler;
 }
@@ -44,6 +55,7 @@ int main(void) {
         .crc = &crc,
     };
     uint8_t resp[NFC_COS_MAX_APDU];
+    g_active_buffer = &buffer;
 
     srand(1);
     assert(nfc_cos_data_loadcb(TAG_TYPE_HF14A_COS, &buffer) == (int)sizeof(info));
@@ -171,6 +183,10 @@ int main(void) {
     len = nfc_cos_process_apdu(select_aid, sizeof(select_aid), resp, sizeof(resp));
     assert(len >= 2);
     assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+
+    assert(nfc_cos_set_write_enabled(false) == STATUS_SUCCESS);
+    assert(nfc_cos_data_factory(0, TAG_TYPE_HF14A_COS));
+    assert(nfc_cos_is_write_enabled());
 
     printf("cos_host_test: ok\n");
     return 0;
