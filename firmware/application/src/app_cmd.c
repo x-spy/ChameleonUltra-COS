@@ -1267,7 +1267,7 @@ static data_frame_tx_t *cmd_processor_hf14a_get_anti_coll_data(uint16_t cmd, uin
 
     // uidlen[1]|uid[uidlen]|atqa[2]|sak[1]|atslen[1]|ats[atslen]
     // dynamic length, so no struct
-    uint8_t payload[1 + *info->size + 2 + 1 + 1 + 254];
+    uint8_t payload[1 + *info->size + 2 + 1 + 1 + 255];
     uint16_t offset = 0;
     payload[offset++] = *info->size;
     memcpy(&payload[offset], info->uid, *info->size);
@@ -2976,7 +2976,7 @@ static data_frame_tx_t *cmd_processor_hf14a_cos_file_create(uint16_t cmd, uint16
     uint16_t record_size = ((uint16_t)data[6] << 8) | data[7];
     uint8_t aid_len = data[8];
     uint16_t data_len = ((uint16_t)data[9] << 8) | data[10];
-    if (aid_len > NFC_COS_MAX_AID_LEN || length < (uint16_t)(11 + aid_len + data_len)) {
+    if (aid_len > NFC_COS_MAX_AID_LEN || length != (uint16_t)(11 + aid_len + data_len)) {
         return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     }
     uint8_t *aid = aid_len > 0 ? &data[11] : NULL;
@@ -3015,13 +3015,14 @@ static data_frame_tx_t *cmd_processor_hf14a_cos_file_write(uint16_t cmd, uint16_
     uint16_t fid = ((uint16_t)data[0] << 8) | data[1];
     uint16_t offset = ((uint16_t)data[2] << 8) | data[3];
     uint16_t data_len = ((uint16_t)data[4] << 8) | data[5];
-    if (length < (uint16_t)(6 + data_len)) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    if (length != (uint16_t)(6 + data_len)) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     status = nfc_cos_write_file(fid, offset, &data[6], data_len);
     return data_frame_make(cmd, status, 0, NULL);
 }
 
 static data_frame_tx_t *cmd_processor_hf14a_cos_file_list(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
     if (!active_hf_slot_is_cos()) return data_frame_make(cmd, STATUS_INVALID_SLOT_TYPE, 0, NULL);
+    if (length != 0) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     static uint8_t resp[NFC_COS_LIST_MAX_LEN];
     uint16_t resp_len = nfc_cos_list_files(resp, sizeof(resp));
     return data_frame_make(cmd, STATUS_SUCCESS, resp_len, resp);
@@ -3029,6 +3030,7 @@ static data_frame_tx_t *cmd_processor_hf14a_cos_file_list(uint16_t cmd, uint16_t
 
 static data_frame_tx_t *cmd_processor_hf14a_cos_get_config(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
     if (!active_hf_slot_is_cos()) return data_frame_make(cmd, STATUS_INVALID_SLOT_TYPE, 0, NULL);
+    if (length != 0) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     uint8_t resp[1] = { nfc_cos_is_write_enabled() ? 1 : 0 };
     return data_frame_make(cmd, STATUS_SUCCESS, sizeof(resp), resp);
 }
@@ -3046,7 +3048,7 @@ static data_frame_tx_t *cmd_processor_hf14a_cos_record_append(uint16_t cmd, uint
 
     uint16_t fid = ((uint16_t)data[0] << 8) | data[1];
     uint16_t data_len = ((uint16_t)data[2] << 8) | data[3];
-    if (length < (uint16_t)(4 + data_len)) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    if (length != (uint16_t)(4 + data_len)) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
     status = nfc_cos_append_record(fid, &data[4], data_len);
     return data_frame_make(cmd, status, 0, NULL);
 }

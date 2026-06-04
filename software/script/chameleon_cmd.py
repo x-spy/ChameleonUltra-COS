@@ -351,7 +351,7 @@ class ChameleonCMD:
                               parent_fid & 0xFFFF,
                               fid & 0xFFFF,
                               file_type & 0xFF,
-                              sfi & 0x1F,
+                              sfi & 0xFF,
                               record_size & 0xFFFF,
                               len(aid),
                               len(data))

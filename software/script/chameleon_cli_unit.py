@@ -9173,13 +9173,14 @@ class COSList(COSSlotUnit):
         if resp.status != Status.SUCCESS:
             print(f' {CR}Failed: {Status(resp.status)}{C0}')
             return
-        print(f' {CY}IDX  TYPE       FID   PARENT SFI SIZE RECORDS AID{C0}')
+        print(f' {CY}IDX  TYPE       FID   PARENT SFI SIZE RECORDS REC_LEN AID{C0}')
         for f in resp.parsed:
             aid = f['aid'].hex().upper()
             sfi = '-' if f['sfi'] == 0 else str(f['sfi'])
+            rec_len = '-' if f['record_size'] == 0 else str(f['record_size'])
             print(f" {f['index']:>3}  {_cos_file_type_name(f['type']):<9} "
                   f"{f['fid']:04X}  {f['parent_fid']:04X}   {sfi:<3} "
-                  f"{f['size']:>4} {f['records']:>7} {aid}")
+                  f"{f['size']:>4} {f['records']:>7} {rec_len:>7} {aid}")
 
 
 @cos.command('mkdir')
@@ -9220,11 +9221,23 @@ class COSCreate(COSSlotUnit):
         return parser
 
     def on_exec(self, args: argparse.Namespace):
+        if args.sfi < 0 or args.sfi > 30:
+            print(f' {CR}SFI must be between 0 and 30.{C0}')
+            return
+        if args.record_size < 0 or args.record_size > 0xFFFF:
+            print(f' {CR}Record size must be between 0 and 65535 bytes.{C0}')
+            return
+        if args.type == 'binary' and args.record_size != 0:
+            print(f' {CR}--record-size is only valid for record EF files.{C0}')
+            return
         initial = b''
         if args.data:
             initial = _cos_parse_hex(args.data)
         elif args.file:
             initial = Path(args.file).read_bytes()
+        if args.type == 'record' and initial and args.record_size and len(initial) != args.record_size:
+            print(f' {CR}Initial record length must match --record-size ({args.record_size} bytes).{C0}')
+            return
         create_data = b'' if args.type == 'record' else initial
         resp = self.cmd.hf14a_cos_file_create(
             _cos_parse_fid(args.parent), _cos_parse_fid(args.fid),

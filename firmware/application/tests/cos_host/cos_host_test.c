@@ -68,11 +68,14 @@ int main(void) {
     const uint8_t read_after_want[] = {0x10, 0x11, 0xAA, 0xBB, 0xCC, 0x90, 0x00};
     expect_hex(resp, len, read_after_want, sizeof(read_after_want));
 
-    assert(nfc_cos_create_file(0x3F00, 0x0201, NFC_COS_FILE_TYPE_EF_RECORD,
-                               4, 0, NULL, 0, NULL, 0) == STATUS_SUCCESS);
     uint8_t rec[18];
     for (uint8_t i = 0; i < sizeof(rec); i++) rec[i] = (uint8_t)(i + 1);
-    assert(nfc_cos_append_record(0x0201, rec, sizeof(rec)) == STATUS_SUCCESS);
+    assert(nfc_cos_create_file(0x3F00, 0x0004, NFC_COS_FILE_TYPE_EF_RECORD,
+                               4, 18, NULL, 0, NULL, 0) == STATUS_SUCCESS);
+    assert(nfc_cos_create_file(0x3F00, 0x0005, NFC_COS_FILE_TYPE_EF_RECORD,
+                               5, 18, NULL, 0, rec, 17) == STATUS_PAR_ERR);
+    assert(nfc_cos_append_record(0x0004, rec, sizeof(rec)) == STATUS_SUCCESS);
+    assert(nfc_cos_append_record(0x0004, rec, sizeof(rec) - 1) == STATUS_PAR_ERR);
 
     const uint8_t read_record[] = {0x00, 0xB2, 0x01, 0x24, 0x12};
     len = nfc_cos_process_apdu(read_record, sizeof(read_record), resp, sizeof(resp));
@@ -81,6 +84,75 @@ int main(void) {
     record_want[18] = 0x90;
     record_want[19] = 0x00;
     expect_hex(resp, len, record_want, sizeof(record_want));
+
+    const uint8_t read_record_le0[] = {0x00, 0xB2, 0x01, 0x24, 0x00};
+    len = nfc_cos_process_apdu(read_record_le0, sizeof(read_record_le0), resp, sizeof(resp));
+    expect_hex(resp, len, record_want, sizeof(record_want));
+
+    const uint8_t read_record_bad_len[] = {0x00, 0xB2, 0x01, 0x24, 0x11};
+    len = nfc_cos_process_apdu(read_record_bad_len, sizeof(read_record_bad_len), resp, sizeof(resp));
+    const uint8_t want_6c12[] = {0x6C, 0x12};
+    expect_hex(resp, len, want_6c12, sizeof(want_6c12));
+
+    const uint8_t read_record_bad_p2[] = {0x00, 0xB2, 0x01, 0x20, 0x12};
+    len = nfc_cos_process_apdu(read_record_bad_p2, sizeof(read_record_bad_p2), resp, sizeof(resp));
+    const uint8_t want_6a86[] = {0x6A, 0x86};
+    expect_hex(resp, len, want_6a86, sizeof(want_6a86));
+
+    const uint8_t read_record_on_binary_sfi[] = {0x00, 0xB2, 0x01, 0x14, 0x12};
+    len = nfc_cos_process_apdu(read_record_on_binary_sfi, sizeof(read_record_on_binary_sfi), resp, sizeof(resp));
+    const uint8_t want_6981[] = {0x69, 0x81};
+    expect_hex(resp, len, want_6981, sizeof(want_6981));
+
+    const uint8_t select_record_ef[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x00, 0x04};
+    len = nfc_cos_process_apdu(select_record_ef, sizeof(select_record_ef), resp, sizeof(resp));
+    assert(len >= 2);
+    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+
+    const uint8_t read_binary_on_record[] = {0x00, 0xB0, 0x00, 0x00, 0x00};
+    len = nfc_cos_process_apdu(read_binary_on_record, sizeof(read_binary_on_record), resp, sizeof(resp));
+    expect_hex(resp, len, want_6981, sizeof(want_6981));
+
+    uint8_t append_record_apdu[5 + 18];
+    append_record_apdu[0] = 0x00;
+    append_record_apdu[1] = 0xE2;
+    append_record_apdu[2] = 0x00;
+    append_record_apdu[3] = 0x20;
+    append_record_apdu[4] = 18;
+    for (uint8_t i = 0; i < 18; i++) append_record_apdu[5 + i] = (uint8_t)(0x80 + i);
+    len = nfc_cos_process_apdu(append_record_apdu, sizeof(append_record_apdu), resp, sizeof(resp));
+    expect_hex(resp, len, ok, sizeof(ok));
+
+    uint8_t append_record_bad_apdu[5 + 17];
+    append_record_bad_apdu[0] = 0x00;
+    append_record_bad_apdu[1] = 0xE2;
+    append_record_bad_apdu[2] = 0x00;
+    append_record_bad_apdu[3] = 0x20;
+    append_record_bad_apdu[4] = 17;
+    memset(&append_record_bad_apdu[5], 0xAA, 17);
+    len = nfc_cos_process_apdu(append_record_bad_apdu, sizeof(append_record_bad_apdu), resp, sizeof(resp));
+    const uint8_t want_6700[] = {0x67, 0x00};
+    expect_hex(resp, len, want_6700, sizeof(want_6700));
+
+    uint8_t update_record_apdu[5 + 18];
+    update_record_apdu[0] = 0x00;
+    update_record_apdu[1] = 0xDC;
+    update_record_apdu[2] = 0x02;
+    update_record_apdu[3] = 0x24;
+    update_record_apdu[4] = 18;
+    for (uint8_t i = 0; i < 18; i++) update_record_apdu[5 + i] = (uint8_t)(0x40 + i);
+    len = nfc_cos_process_apdu(update_record_apdu, sizeof(update_record_apdu), resp, sizeof(resp));
+    expect_hex(resp, len, ok, sizeof(ok));
+
+    const uint8_t read_second_record[] = {0x00, 0xB2, 0x02, 0x24, 0x12};
+    len = nfc_cos_process_apdu(read_second_record, sizeof(read_second_record), resp, sizeof(resp));
+    for (uint8_t i = 0; i < 18; i++) record_want[i] = (uint8_t)(0x40 + i);
+    expect_hex(resp, len, record_want, sizeof(record_want));
+
+    update_record_apdu[2] = 0x03;
+    len = nfc_cos_process_apdu(update_record_apdu, sizeof(update_record_apdu), resp, sizeof(resp));
+    const uint8_t want_6a83[] = {0x6A, 0x83};
+    expect_hex(resp, len, want_6a83, sizeof(want_6a83));
 
     const uint8_t challenge[] = {0x00, 0x84, 0x00, 0x00, 0x08};
     len = nfc_cos_process_apdu(challenge, sizeof(challenge), resp, sizeof(resp));

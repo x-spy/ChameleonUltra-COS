@@ -28,6 +28,7 @@ NRF_LOG_MODULE_REGISTER();
 #define SW_SUCCESS                 0x9000u
 #define SW_WARNING_EOF             0x6282u
 #define SW_WRONG_LENGTH            0x6700u
+#define SW_COMMAND_INCOMPATIBLE    0x6981u
 #define SW_SECURITY_NOT_SATISFIED  0x6982u
 #define SW_WRITE_DISABLED          0x6985u
 #define SW_NO_CURRENT_EF           0x6986u
@@ -52,11 +53,20 @@ NRF_LOG_MODULE_REGISTER();
 
 typedef struct {
     uint8_t lc;
+    uint8_t raw_le;
     uint16_t le;
     bool has_lc;
     bool has_le;
     const uint8_t *data;
 } cos_apdu_case_t;
+
+typedef enum {
+    COS_EF_RES_OK,
+    COS_EF_RES_BAD_P1P2,
+    COS_EF_RES_NO_CURRENT,
+    COS_EF_RES_FILE_NOT_FOUND,
+    COS_EF_RES_WRONG_TYPE,
+} cos_ef_res_t;
 
 static nfc_cos_information_t *m_info = NULL;
 static nfc_tag_14a_coll_res_reference_t m_shadow_coll_res;
@@ -92,6 +102,11 @@ static uint16_t append_sw(uint8_t *resp, uint16_t len, uint16_t resp_max, uint16
 
 static uint16_t sw_only(uint8_t *resp, uint16_t resp_max, uint16_t sw) {
     return append_sw(resp, 0, resp_max, sw);
+}
+
+static uint16_t sw_correct_length(uint8_t *resp, uint16_t resp_max, uint16_t len) {
+    if (len > 256) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+    return sw_only(resp, resp_max, (uint16_t)(0x6C00u | (len == 256 ? 0x00 : (len & 0xFF))));
 }
 
 static bool is_df_type(uint8_t type) {
@@ -164,6 +179,38 @@ static uint16_t record_count(const nfc_cos_file_entry_t *e) {
     return count;
 }
 
+static uint16_t record_payload_len(const nfc_cos_file_entry_t *e) {
+    if (e->type != NFC_COS_FILE_TYPE_EF_RECORD || e->data_len == 0) return 0;
+    uint16_t off = 0;
+    uint16_t total = 0;
+    while (off + 2 <= e->data_len) {
+        uint16_t len = be16(&m_info->data_pool[e->data_offset + off]);
+        if (off + 2 + len > e->data_len) break;
+        total += len;
+        off += 2 + len;
+    }
+    return total;
+}
+
+static bool find_record(const nfc_cos_file_entry_t *e, uint8_t record_no,
+                        uint16_t *record_off, uint16_t *record_len) {
+    if (e == NULL || e->type != NFC_COS_FILE_TYPE_EF_RECORD || record_no == 0) return false;
+    uint16_t off = 0;
+    uint8_t current = 1;
+    while (off + 2 <= e->data_len) {
+        uint16_t len = be16(&m_info->data_pool[e->data_offset + off]);
+        if (off + 2 + len > e->data_len) break;
+        if (current == record_no) {
+            if (record_off != NULL) *record_off = off;
+            if (record_len != NULL) *record_len = len;
+            return true;
+        }
+        off += 2 + len;
+        current++;
+    }
+    return false;
+}
+
 static bool compact_pool_with_resize(uint8_t resize_idx, uint16_t new_alloc_len) {
     if (m_info == NULL) return false;
     uint16_t used = 0;
@@ -211,6 +258,15 @@ static bool has_child(uint16_t parent_fid) {
     return false;
 }
 
+static void refresh_file_count(void) {
+    if (m_info == NULL) return;
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < NFC_COS_MAX_FILES; i++) {
+        if (m_info->files[i].active) count++;
+    }
+    m_info->file_count = count;
+}
+
 static uint8_t delete_file_recursive(uint16_t fid) {
     uint8_t idx = find_file_by_fid(fid);
     if (idx == NFC_COS_INVALID_IDX) return STATUS_PAR_ERR;
@@ -229,6 +285,7 @@ static uint8_t delete_file_recursive(uint16_t fid) {
     if (m_selected_ef == idx) m_selected_ef = NFC_COS_INVALID_IDX;
     if (m_selected_df == idx) m_selected_df = 0;
     compact_pool_with_resize(NFC_COS_INVALID_IDX, 0);
+    refresh_file_count();
     return STATUS_SUCCESS;
 }
 
@@ -288,6 +345,7 @@ static bool parse_short_apdu(const uint8_t *apdu, uint16_t len, cos_apdu_case_t 
     if (len == 4) return true;
     if (len == 5) {
         parsed->has_le = true;
+        parsed->raw_le = apdu[4];
         parsed->le = apdu[4] == 0 ? 256 : apdu[4];
         return true;
     }
@@ -300,7 +358,8 @@ static bool parse_short_apdu(const uint8_t *apdu, uint16_t len, cos_apdu_case_t 
     if (len == (uint16_t)(5 + lc)) return true;
     if (len == (uint16_t)(6 + lc)) {
         parsed->has_le = true;
-        parsed->le = apdu[5 + lc] == 0 ? 256 : apdu[5 + lc];
+        parsed->raw_le = apdu[5 + lc];
+        parsed->le = parsed->raw_le == 0 ? 256 : parsed->raw_le;
         return true;
     }
     return false;
@@ -393,26 +452,131 @@ static uint16_t apdu_select(const uint8_t *apdu, const cos_apdu_case_t *parsed,
     return build_fci(idx, resp, resp_max);
 }
 
-static uint8_t resolve_binary_ef(uint8_t p1, uint8_t p2, uint16_t *offset) {
+static cos_ef_res_t resolve_binary_ef(uint8_t p1, uint8_t p2, uint16_t *offset, uint8_t *out_idx) {
     if (p1 & 0x80) {
+        if (p1 & 0x60) return COS_EF_RES_BAD_P1P2;
         uint8_t sfi = p1 & 0x1F;
+        if (sfi == 0 || sfi == 0x1F) return COS_EF_RES_BAD_P1P2;
         *offset = p2;
-        return find_ef_by_sfi(m_info->files[m_selected_df].fid, sfi, NFC_COS_FILE_TYPE_EF_BINARY);
+        *out_idx = find_ef_by_sfi(m_info->files[m_selected_df].fid, sfi, 0);
+        if (*out_idx == NFC_COS_INVALID_IDX) return COS_EF_RES_FILE_NOT_FOUND;
+        return m_info->files[*out_idx].type == NFC_COS_FILE_TYPE_EF_BINARY ?
+               COS_EF_RES_OK : COS_EF_RES_WRONG_TYPE;
     }
+
     *offset = ((uint16_t)p1 << 8) | p2;
-    return m_selected_ef;
+    *out_idx = m_selected_ef;
+    if (*out_idx == NFC_COS_INVALID_IDX) return COS_EF_RES_NO_CURRENT;
+    return m_info->files[*out_idx].type == NFC_COS_FILE_TYPE_EF_BINARY ?
+           COS_EF_RES_OK : COS_EF_RES_WRONG_TYPE;
+}
+
+static cos_ef_res_t resolve_record_ef(uint8_t p2, bool append_mode, uint8_t *out_idx) {
+    uint8_t sfi = p2 >> 3;
+    uint8_t mode = p2 & 0x07;
+
+    if (sfi == 0x1F) return COS_EF_RES_BAD_P1P2;
+    if (append_mode) {
+        if (mode != 0x00) return COS_EF_RES_BAD_P1P2;
+    } else if (sfi != 0) {
+        if (mode != 0x04) return COS_EF_RES_BAD_P1P2;
+    } else if (mode != 0x00 && mode != 0x04) {
+        return COS_EF_RES_BAD_P1P2;
+    }
+
+    if (sfi != 0) {
+        *out_idx = find_ef_by_sfi(m_info->files[m_selected_df].fid, sfi, 0);
+        if (*out_idx == NFC_COS_INVALID_IDX) return COS_EF_RES_FILE_NOT_FOUND;
+        return m_info->files[*out_idx].type == NFC_COS_FILE_TYPE_EF_RECORD ?
+               COS_EF_RES_OK : COS_EF_RES_WRONG_TYPE;
+    }
+
+    *out_idx = m_selected_ef;
+    if (*out_idx == NFC_COS_INVALID_IDX) return COS_EF_RES_NO_CURRENT;
+    return m_info->files[*out_idx].type == NFC_COS_FILE_TYPE_EF_RECORD ?
+           COS_EF_RES_OK : COS_EF_RES_WRONG_TYPE;
+}
+
+static uint16_t sw_for_ef_res(cos_ef_res_t res, uint8_t *resp, uint16_t resp_max) {
+    switch (res) {
+        case COS_EF_RES_BAD_P1P2:
+            return sw_only(resp, resp_max, SW_INCORRECT_P1P2);
+        case COS_EF_RES_NO_CURRENT:
+            return sw_only(resp, resp_max, SW_NO_CURRENT_EF);
+        case COS_EF_RES_FILE_NOT_FOUND:
+            return sw_only(resp, resp_max, SW_FILE_NOT_FOUND);
+        case COS_EF_RES_WRONG_TYPE:
+            return sw_only(resp, resp_max, SW_COMMAND_INCOMPATIBLE);
+        case COS_EF_RES_OK:
+        default:
+            return sw_only(resp, resp_max, SW_SUCCESS);
+    }
+}
+
+static uint16_t append_record_data(uint8_t *resp, uint16_t resp_max, const uint8_t *data,
+                                   uint16_t len, const cos_apdu_case_t *parsed) {
+    if (!parsed->has_le) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+    if (parsed->raw_le != 0 && parsed->le != len) {
+        return sw_correct_length(resp, resp_max, len);
+    }
+
+    uint16_t out_len = len;
+    if (out_len > 256) out_len = 256;
+    if (out_len > resp_max - 2) out_len = resp_max - 2;
+    memcpy(resp, data, out_len);
+    return append_sw(resp, out_len, resp_max, (len > out_len) ? SW_WARNING_EOF : SW_SUCCESS);
+}
+
+static uint8_t update_record_by_index(uint8_t idx, uint8_t record_no,
+                                      const uint8_t *data, uint16_t data_len,
+                                      bool *record_not_found) {
+    if (record_not_found != NULL) *record_not_found = false;
+    nfc_cos_file_entry_t *e = &m_info->files[idx];
+    if (e->type != NFC_COS_FILE_TYPE_EF_RECORD || data == NULL || data_len == 0) {
+        return STATUS_PAR_ERR;
+    }
+    if (e->record_size != 0 && data_len != e->record_size) {
+        return STATUS_PAR_ERR;
+    }
+
+    uint16_t record_off = 0;
+    uint16_t old_record_len = 0;
+    if (!find_record(e, record_no, &record_off, &old_record_len)) {
+        if (record_not_found != NULL) *record_not_found = true;
+        return STATUS_PAR_ERR;
+    }
+
+    uint16_t old_entry_len = 2 + old_record_len;
+    uint16_t new_entry_len = 2 + data_len;
+    uint16_t new_file_len = e->data_len - old_entry_len + new_entry_len;
+    if (new_entry_len > old_entry_len && !ensure_file_capacity(idx, new_file_len)) {
+        return STATUS_MEM_ERR;
+    }
+
+    e = &m_info->files[idx];
+    uint8_t *base = &m_info->data_pool[e->data_offset];
+    uint16_t old_tail_off = record_off + old_entry_len;
+    uint16_t new_tail_off = record_off + new_entry_len;
+    uint16_t tail_len = e->data_len - old_tail_off;
+    if (old_tail_off != new_tail_off && tail_len > 0) {
+        memmove(&base[new_tail_off], &base[old_tail_off], tail_len);
+    }
+    put_be16(&base[record_off], data_len);
+    memcpy(&base[record_off + 2], data, data_len);
+    e->data_len = new_file_len;
+    return STATUS_SUCCESS;
 }
 
 static uint16_t apdu_read_binary(const uint8_t *apdu, const cos_apdu_case_t *parsed,
                                  uint8_t *resp, uint16_t resp_max) {
+    if (parsed->has_lc) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+
     uint16_t offset = 0;
-    uint8_t idx = resolve_binary_ef(apdu[2], apdu[3], &offset);
-    if (idx == NFC_COS_INVALID_IDX) return sw_only(resp, resp_max, SW_NO_CURRENT_EF);
+    uint8_t idx = NFC_COS_INVALID_IDX;
+    cos_ef_res_t res = resolve_binary_ef(apdu[2], apdu[3], &offset, &idx);
+    if (res != COS_EF_RES_OK) return sw_for_ef_res(res, resp, resp_max);
 
     nfc_cos_file_entry_t *e = &m_info->files[idx];
-    if (e->type != NFC_COS_FILE_TYPE_EF_BINARY) {
-        return sw_only(resp, resp_max, SW_NO_CURRENT_EF);
-    }
     if (offset > e->data_len) return sw_only(resp, resp_max, SW_INCORRECT_P1P2);
 
     uint16_t le = parsed->has_le ? parsed->le : 256;
@@ -427,16 +591,14 @@ static uint16_t apdu_read_binary(const uint8_t *apdu, const cos_apdu_case_t *par
 static uint16_t apdu_update_binary(const uint8_t *apdu, const cos_apdu_case_t *parsed,
                                    uint8_t *resp, uint16_t resp_max) {
     if (!m_info->write_enabled) return sw_only(resp, resp_max, SW_WRITE_DISABLED);
-    if (!parsed->has_lc) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+    if (!parsed->has_lc || parsed->has_le) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
 
     uint16_t offset = 0;
-    uint8_t idx = resolve_binary_ef(apdu[2], apdu[3], &offset);
-    if (idx == NFC_COS_INVALID_IDX) return sw_only(resp, resp_max, SW_NO_CURRENT_EF);
+    uint8_t idx = NFC_COS_INVALID_IDX;
+    cos_ef_res_t res = resolve_binary_ef(apdu[2], apdu[3], &offset, &idx);
+    if (res != COS_EF_RES_OK) return sw_for_ef_res(res, resp, resp_max);
 
     nfc_cos_file_entry_t *e = &m_info->files[idx];
-    if (e->type != NFC_COS_FILE_TYPE_EF_BINARY) {
-        return sw_only(resp, resp_max, SW_NO_CURRENT_EF);
-    }
     if ((uint32_t)offset + parsed->lc > UINT16_MAX) {
         return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
     }
@@ -454,38 +616,19 @@ static uint16_t apdu_update_binary(const uint8_t *apdu, const cos_apdu_case_t *p
 
 static uint16_t apdu_read_record(const uint8_t *apdu, const cos_apdu_case_t *parsed,
                                  uint8_t *resp, uint16_t resp_max) {
-    uint8_t record_no = apdu[2];
-    uint8_t p2 = apdu[3];
-    uint8_t idx = NFC_COS_INVALID_IDX;
+    if (parsed->has_lc) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
 
-    if ((p2 & 0x07) != 0x04 && (p2 & 0x07) != 0x00) {
-        return sw_only(resp, resp_max, SW_INCORRECT_P1P2);
-    }
-    uint8_t sfi = p2 >> 3;
-    if (sfi != 0) {
-        idx = find_ef_by_sfi(m_info->files[m_selected_df].fid, sfi, NFC_COS_FILE_TYPE_EF_RECORD);
-    } else {
-        idx = m_selected_ef;
-    }
-    if (idx == NFC_COS_INVALID_IDX || m_info->files[idx].type != NFC_COS_FILE_TYPE_EF_RECORD) {
-        return sw_only(resp, resp_max, SW_RECORD_NOT_FOUND);
-    }
+    uint8_t idx = NFC_COS_INVALID_IDX;
+    cos_ef_res_t res = resolve_record_ef(apdu[3], false, &idx);
+    if (res != COS_EF_RES_OK) return sw_for_ef_res(res, resp, resp_max);
 
     nfc_cos_file_entry_t *e = &m_info->files[idx];
     uint16_t off = 0;
-    uint8_t current = 1;
-    while (off + 2 <= e->data_len) {
-        uint16_t len = be16(&m_info->data_pool[e->data_offset + off]);
-        if (off + 2 + len > e->data_len) break;
-        if (current == record_no) {
-            uint16_t le = parsed->has_le ? parsed->le : len;
-            if (le > len) le = len;
-            if (le > resp_max - 2) le = resp_max - 2;
-            memcpy(resp, &m_info->data_pool[e->data_offset + off + 2], le);
-            return append_sw(resp, le, resp_max, SW_SUCCESS);
-        }
-        off += 2 + len;
-        current++;
+    uint16_t len = 0;
+    if (find_record(e, apdu[2], &off, &len)) {
+        return append_record_data(resp, resp_max,
+                                  &m_info->data_pool[e->data_offset + off + 2],
+                                  len, parsed);
     }
     return sw_only(resp, resp_max, SW_RECORD_NOT_FOUND);
 }
@@ -493,21 +636,36 @@ static uint16_t apdu_read_record(const uint8_t *apdu, const cos_apdu_case_t *par
 static uint16_t apdu_append_record(const uint8_t *apdu, const cos_apdu_case_t *parsed,
                                    uint8_t *resp, uint16_t resp_max) {
     if (!m_info->write_enabled) return sw_only(resp, resp_max, SW_WRITE_DISABLED);
-    if (!parsed->has_lc) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+    if (!parsed->has_lc || parsed->has_le) {
+        return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+    }
+    if (apdu[2] != 0x00) return sw_only(resp, resp_max, SW_INCORRECT_P1P2);
 
     uint8_t idx = NFC_COS_INVALID_IDX;
-    uint8_t sfi = apdu[3] >> 3;
-    if (sfi != 0) {
-        idx = find_ef_by_sfi(m_info->files[m_selected_df].fid, sfi, NFC_COS_FILE_TYPE_EF_RECORD);
-    } else {
-        idx = m_selected_ef;
-    }
-    if (idx == NFC_COS_INVALID_IDX || m_info->files[idx].type != NFC_COS_FILE_TYPE_EF_RECORD) {
-        return sw_only(resp, resp_max, SW_RECORD_NOT_FOUND);
-    }
+    cos_ef_res_t res = resolve_record_ef(apdu[3], true, &idx);
+    if (res != COS_EF_RES_OK) return sw_for_ef_res(res, resp, resp_max);
 
     uint8_t st = nfc_cos_append_record(m_info->files[idx].fid, parsed->data, parsed->lc);
-    return sw_only(resp, resp_max, st == STATUS_SUCCESS ? SW_SUCCESS : SW_NOT_ENOUGH_MEMORY);
+    if (st == STATUS_SUCCESS) return sw_only(resp, resp_max, SW_SUCCESS);
+    if (st == STATUS_MEM_ERR) return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
+    return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+}
+
+static uint16_t apdu_update_record(const uint8_t *apdu, const cos_apdu_case_t *parsed,
+                                   uint8_t *resp, uint16_t resp_max) {
+    if (!m_info->write_enabled) return sw_only(resp, resp_max, SW_WRITE_DISABLED);
+    if (!parsed->has_lc || parsed->has_le) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+
+    uint8_t idx = NFC_COS_INVALID_IDX;
+    cos_ef_res_t res = resolve_record_ef(apdu[3], false, &idx);
+    if (res != COS_EF_RES_OK) return sw_for_ef_res(res, resp, resp_max);
+
+    bool record_not_found = false;
+    uint8_t st = update_record_by_index(idx, apdu[2], parsed->data, parsed->lc, &record_not_found);
+    if (record_not_found) return sw_only(resp, resp_max, SW_RECORD_NOT_FOUND);
+    if (st == STATUS_SUCCESS) return sw_only(resp, resp_max, SW_SUCCESS);
+    if (st == STATUS_MEM_ERR) return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
+    return sw_only(resp, resp_max, SW_WRONG_LENGTH);
 }
 
 static uint16_t apdu_get_challenge(const cos_apdu_case_t *parsed,
@@ -546,6 +704,8 @@ uint16_t nfc_cos_process_apdu(const uint8_t *apdu, uint16_t apdu_len,
             return apdu_update_binary(apdu, &parsed, resp, resp_max);
         case 0xB2:
             return apdu_read_record(apdu, &parsed, resp, resp_max);
+        case 0xDC:
+            return apdu_update_record(apdu, &parsed, resp, resp_max);
         case 0xE2:
             return apdu_append_record(apdu, &parsed, resp, resp_max);
         case 0x84:
@@ -568,11 +728,23 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
         return STATUS_PAR_ERR;
     }
     if (aid_len > NFC_COS_MAX_AID_LEN) return STATUS_PAR_ERR;
+    if (sfi > 30) return STATUS_PAR_ERR;
     if (type != NFC_COS_FILE_TYPE_DF &&
             type != NFC_COS_FILE_TYPE_EF_BINARY &&
             type != NFC_COS_FILE_TYPE_EF_RECORD) {
         return STATUS_PAR_ERR;
     }
+    if (type == NFC_COS_FILE_TYPE_DF && (sfi != 0 || record_size != 0 || data_len != 0)) {
+        return STATUS_PAR_ERR;
+    }
+    if (type == NFC_COS_FILE_TYPE_EF_BINARY && record_size != 0) {
+        return STATUS_PAR_ERR;
+    }
+    if (type == NFC_COS_FILE_TYPE_EF_RECORD &&
+            data_len > 0 && record_size != 0 && data_len != record_size) {
+        return STATUS_PAR_ERR;
+    }
+    if (data_len > 0 && data == NULL) return STATUS_PAR_ERR;
     uint8_t parent_idx = find_file_by_fid(parent_fid);
     if (parent_idx == NFC_COS_INVALID_IDX || !is_df_type(m_info->files[parent_idx].type)) {
         return STATUS_PAR_ERR;
@@ -580,9 +752,14 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
 
     uint8_t idx = first_free_file();
     if (idx == NFC_COS_INVALID_IDX) return STATUS_MEM_ERR;
-    if (is_ef_type(type) && data_len > NFC_COS_DATA_POOL_SIZE - m_info->pool_used) {
+    uint16_t storage_len = data_len;
+    if (type == NFC_COS_FILE_TYPE_EF_RECORD && data_len > 0) {
+        if (data_len > UINT16_MAX - 2) return STATUS_MEM_ERR;
+        storage_len = data_len + 2;
+    }
+    if (is_ef_type(type) && storage_len > NFC_COS_DATA_POOL_SIZE - m_info->pool_used) {
         if (!compact_pool_with_resize(NFC_COS_INVALID_IDX, 0) ||
-                data_len > NFC_COS_DATA_POOL_SIZE - m_info->pool_used) {
+                storage_len > NFC_COS_DATA_POOL_SIZE - m_info->pool_used) {
             return STATUS_MEM_ERR;
         }
     }
@@ -593,18 +770,23 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
     e->fid = fid;
     e->parent_fid = parent_fid;
     e->type = type;
-    e->sfi = sfi & 0x1F;
+    e->sfi = sfi;
     e->record_size = record_size;
     e->aid_len = aid_len;
     if (aid_len > 0 && aid != NULL) memcpy(e->aid, aid, aid_len);
-    if (is_ef_type(type) && data_len > 0) {
+    if (is_ef_type(type) && storage_len > 0) {
         e->data_offset = m_info->pool_used;
-        e->data_len = data_len;
-        e->alloc_len = data_len;
-        memcpy(&m_info->data_pool[e->data_offset], data, data_len);
-        m_info->pool_used += data_len;
+        e->data_len = storage_len;
+        e->alloc_len = storage_len;
+        if (type == NFC_COS_FILE_TYPE_EF_RECORD) {
+            put_be16(&m_info->data_pool[e->data_offset], data_len);
+            memcpy(&m_info->data_pool[e->data_offset + 2], data, data_len);
+        } else {
+            memcpy(&m_info->data_pool[e->data_offset], data, data_len);
+        }
+        m_info->pool_used += storage_len;
     }
-    if (m_info->file_count < NFC_COS_MAX_FILES) m_info->file_count++;
+    refresh_file_count();
     return STATUS_SUCCESS;
 }
 
@@ -661,8 +843,10 @@ uint8_t nfc_cos_append_record(uint16_t fid, const uint8_t *data, uint16_t data_l
     if (idx == NFC_COS_INVALID_IDX || m_info->files[idx].type != NFC_COS_FILE_TYPE_EF_RECORD) {
         return STATUS_PAR_ERR;
     }
+    if (data_len == 0) return STATUS_PAR_ERR;
     if (data_len > UINT16_MAX - 2) return STATUS_MEM_ERR;
     nfc_cos_file_entry_t *e = &m_info->files[idx];
+    if (e->record_size != 0 && data_len != e->record_size) return STATUS_PAR_ERR;
     uint16_t old_len = e->data_len;
     uint16_t new_len = old_len + 2 + data_len;
     if (new_len < old_len || !ensure_file_capacity(idx, new_len)) return STATUS_MEM_ERR;
@@ -688,7 +872,7 @@ uint16_t nfc_cos_list_files(uint8_t *out, uint16_t out_max) {
         put_be16(&out[off], e->parent_fid);
         off += 2;
         out[off++] = e->sfi;
-        put_be16(&out[off], e->data_len);
+        put_be16(&out[off], e->type == NFC_COS_FILE_TYPE_EF_RECORD ? record_payload_len(e) : e->data_len);
         off += 2;
         put_be16(&out[off], record_count(e));
         off += 2;
