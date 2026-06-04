@@ -10,6 +10,7 @@
 #include <stddef.h>
 
 #include "app_status.h"
+#include "crc_utils.h"
 #include "fds_util.h"
 #include "nfc_cos.h"
 #include "sdk_config.h"
@@ -1340,7 +1341,17 @@ int nfc_cos_data_savecb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
     if (!cos_write_pool_chunks()) {
         return 0;
     }
-    return cos_header_size();
+
+    fds_slot_record_map_t map_info;
+    get_fds_map_by_slot_sense_type_for_dump(m_active_slot, TAG_SENSE_HF, &map_info);
+    if (!fds_write_sync(map_info.id, map_info.key, cos_header_size(), buffer->buffer)) {
+        NRF_LOG_ERROR("COS slot %d header write failed", m_active_slot);
+        return 0;
+    }
+    if (buffer->crc != NULL) {
+        calc_14a_crc_lut(buffer->buffer, cos_header_size(), (uint8_t *)buffer->crc);
+    }
+    return 0;
 }
 
 bool nfc_cos_data_factory(uint8_t slot, tag_specific_type_t tag_type) {
