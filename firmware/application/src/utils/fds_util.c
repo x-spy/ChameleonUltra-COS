@@ -130,6 +130,7 @@ bool fds_write_sync(uint16_t id, uint16_t key, uint16_t length, void *buffer) {
     ret_code_t err_code = fds_write_record_nogc(id, key, data_length_words, buffer);
     if (err_code == NRF_SUCCESS) {
         while (!fds_operation_info.success) {
+            bsp_wdt_feed();
             __NOP();
         }; // Waiting for operation to complete
     } else if (err_code == FDS_ERR_NO_SPACE_IN_FLASH) {   //Make sure there is space to operate, otherwise GC will be required
@@ -143,6 +144,7 @@ bool fds_write_sync(uint16_t id, uint16_t key, uint16_t length, void *buffer) {
         err_code = fds_write_record_nogc(id, key, data_length_words, buffer);
         if (err_code == NRF_SUCCESS) {
             while (!fds_operation_info.success) {
+                bsp_wdt_feed();
                 __NOP();
             }; // Waiting for operation to complete
         } else if (err_code == FDS_ERR_NO_SPACE_IN_FLASH) {
@@ -177,6 +179,7 @@ int fds_delete_sync(uint16_t id, uint16_t key) {
         APP_ERROR_CHECK(err_code);
         delete_count++;
         while (!fds_operation_info.success) {
+            bsp_wdt_feed();
             __NOP();
         }; //Waiting for operation to complete
     }
@@ -285,6 +288,7 @@ void fds_gc_sync(void) {
     ret_code_t err_code = fds_gc();
     APP_ERROR_CHECK(err_code);
     while (!fds_operation_info.success) {
+        bsp_wdt_feed();
         __NOP();
     };
 }
@@ -308,6 +312,7 @@ static bool fds_next_record_delete_sync() {
     }
 
     while (!fds_operation_info.success) {
+        bsp_wdt_feed();
         __NOP();
     }
 
