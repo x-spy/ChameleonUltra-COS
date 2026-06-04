@@ -52,6 +52,11 @@ int main(void) {
     const uint8_t bin_data[] = {0x10, 0x11, 0x12, 0x13};
     assert(nfc_cos_create_file(0x3F00, 0x0101, NFC_COS_FILE_TYPE_EF_BINARY,
                                2, 0, NULL, 0, bin_data, sizeof(bin_data)) == STATUS_SUCCESS);
+    assert(nfc_cos_set_write_enabled(false) == STATUS_SUCCESS);
+    assert(nfc_cos_create_file(0x3F00, 0x0102, NFC_COS_FILE_TYPE_EF_BINARY,
+                               3, 0, NULL, 0, bin_data, sizeof(bin_data)) == STATUS_CMD_ERR);
+    assert(nfc_cos_delete_file(0x0101) == STATUS_CMD_ERR);
+    assert(nfc_cos_set_write_enabled(true) == STATUS_SUCCESS);
 
     const uint8_t read_sfi[] = {0x00, 0xB0, 0x82, 0x00, 0x04};
     uint16_t len = nfc_cos_process_apdu(read_sfi, sizeof(read_sfi), resp, sizeof(resp));

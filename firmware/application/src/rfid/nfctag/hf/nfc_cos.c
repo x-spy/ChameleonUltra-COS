@@ -724,6 +724,7 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
                             const uint8_t *data, uint16_t data_len) {
     if (m_info == NULL) return STATUS_INVALID_SLOT_TYPE;
     ensure_valid_fs();
+    if (!m_info->write_enabled) return STATUS_CMD_ERR;
     if (fid == 0 || fid == NFC_COS_FID_MF || find_file_by_fid(fid) != NFC_COS_INVALID_IDX) {
         return STATUS_PAR_ERR;
     }
@@ -793,6 +794,7 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
 uint8_t nfc_cos_delete_file(uint16_t fid) {
     if (m_info == NULL) return STATUS_INVALID_SLOT_TYPE;
     ensure_valid_fs();
+    if (!m_info->write_enabled) return STATUS_CMD_ERR;
     return delete_file_recursive(fid);
 }
 
