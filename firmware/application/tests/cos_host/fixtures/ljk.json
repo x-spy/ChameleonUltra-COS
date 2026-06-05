@@ -1,0 +1,145 @@
+{
+  "captured_at": "2026-06-05",
+  "source": {
+    "tool": "Proxmark3 pm3",
+    "port": "/dev/tty.usbmodem2101"
+  },
+  "card": {
+    "type": "pure_cpu_card",
+    "iso14443a": {
+      "uid": "D0920650",
+      "atqa": "0008",
+      "sak": "20",
+      "ats": "107880A00220900000000000D0920650",
+      "ats_crc": "E76A",
+      "historical_bytes": "20900000000000D0920650"
+    }
+  },
+  "directories": [
+    {
+      "fid": "3F00",
+      "select_apdu": "00A40000023F00",
+      "select_response": {
+        "data": "6F2C840E315041592E5359532E4444463031A51A0801019F0C1458BC20230901AA4E008688200423E40300004F46",
+        "sw": "9000"
+      },
+      "df_name": {
+        "hex": "315041592E5359532E4444463031",
+        "ascii": "1PAY.SYS.DDF01"
+      },
+      "files": [
+        {
+          "fid": "0001",
+          "type": "binary",
+          "select_apdu": "00A40000020001",
+          "select_sw": "9000",
+          "read_binary_apdu": "00B0000000",
+          "read_binary_response": {
+            "length": 256,
+            "data": "31303031000000000000D0C2D6D0D0C2000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "sw": "9000"
+          }
+        }
+      ]
+    },
+    {
+      "fid": "1001",
+      "select_sequence": [
+        "00A40000023F00",
+        "00A40000021001"
+      ],
+      "select_response": {
+        "data": "6F18840853594E4A4F4E4553A50C9F0801029F0C050000000000",
+        "sw": "9000"
+      },
+      "df_name": {
+        "hex": "53594E4A4F4E4553",
+        "ascii": "SYNJONES"
+      },
+      "files": [
+        {
+          "fid": "0001",
+          "type": "binary",
+          "select_apdu": "00A40000020001",
+          "select_sw": "9000",
+          "read_binary_apdu": "00B0000000",
+          "read_binary_response": {
+            "length": 45,
+            "data": "53796E6A6F6E6573310220230906AA34646431FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFCBF4FFFFFFFFFFFF",
+            "sw": "9000"
+          }
+        },
+        {
+          "fid": "0002",
+          "type": "binary",
+          "select_apdu": "00A40000020002",
+          "select_sw": "9000",
+          "read_binary_apdu": "00B0000000",
+          "read_binary_response": {
+            "length": 32,
+            "data": "00D4650100000000002027082600ED5007000030320132FFFFFFFFFFFF08FFFF",
+            "sw": "9000"
+          }
+        },
+        {
+          "fid": "0003",
+          "type": "encrypted_binary",
+          "select_apdu": "00A40000020003",
+          "select_sw": "9000",
+          "read_binary_apdu": "00B0000000",
+          "read_binary_response": {
+            "length": 0,
+            "data": "",
+            "sw": "6982"
+          }
+        },
+        {
+          "fid": "0004",
+          "type": "linear_fixed_record",
+          "record_length": 18,
+          "sfi": 4,
+          "select_apdu": "00A40000020004",
+          "select_sw": "9000",
+          "read_binary_response": {
+            "apdu": "00B0000000",
+            "sw": "6981"
+          },
+          "records": [
+            {
+              "number": 1,
+              "read_record_apdu": "00B2012412",
+              "read_record_le0_apdu": "00B2012400",
+              "length": 18,
+              "data": "060500003C2307A5064E88131602B004FFD0",
+              "sw": "9000"
+            },
+            {
+              "number": 2,
+              "read_record_apdu": "00B2022412",
+              "length": 18,
+              "data": "B6090000162207A506C188131601F00AFF15",
+              "sw": "9000"
+            }
+          ],
+          "negative_cases": [
+            {
+              "description": "third record does not exist",
+              "apdu": "00B2032412",
+              "sw": "6A83"
+            },
+            {
+              "description": "wrong Le for fixed record",
+              "apdu": "00B2012411",
+              "sw": "6C12"
+            },
+            {
+              "description": "invalid READ RECORD P2 reference control",
+              "apdu": "00B2012012",
+              "sw": "6985"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -932,7 +932,6 @@ static uint16_t apdu_get_challenge(const cos_apdu_case_t *parsed,
 uint16_t nfc_cos_process_apdu(const uint8_t *apdu, uint16_t apdu_len,
                               uint8_t *resp, uint16_t resp_max) {
     if (m_info == NULL || resp == NULL || resp_max < 2) return 0;
-    ensure_valid_fs();
     if (apdu_len < 4) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
     if (apdu[0] != 0x00 && apdu[0] != 0x80) {
         return sw_only(resp, resp_max, SW_CLA_NOT_SUPPORTED);
@@ -973,9 +972,6 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
     if (m_info == NULL) return STATUS_INVALID_SLOT_TYPE;
     ensure_valid_fs();
     if (!m_info->write_enabled) return STATUS_CMD_ERR;
-    if (fid == 0 || fid == NFC_COS_FID_MF || find_file_by_fid(fid) != NFC_COS_INVALID_IDX) {
-        return STATUS_PAR_ERR;
-    }
     if (aid_len > NFC_COS_MAX_AID_LEN) return STATUS_PAR_ERR;
     if (sfi > 30) return STATUS_PAR_ERR;
     if (type != NFC_COS_FILE_TYPE_DF &&
@@ -996,6 +992,10 @@ uint8_t nfc_cos_create_file(uint16_t parent_fid, uint16_t fid, uint8_t type,
     if (data_len > 0 && data == NULL) return STATUS_PAR_ERR;
     uint8_t parent_idx = find_file_by_fid(parent_fid);
     if (parent_idx == NFC_COS_INVALID_IDX || !is_df_type(m_info->files[parent_idx].type)) {
+        return STATUS_PAR_ERR;
+    }
+    if (fid == 0 || fid == NFC_COS_FID_MF ||
+            find_child_by_fid(parent_fid, fid, 0) != NFC_COS_INVALID_IDX) {
         return STATUS_PAR_ERR;
     }
 
@@ -1219,8 +1219,12 @@ static void send_wtx(void) {
 }
 
 static void nfc_cos_state_handler(uint8_t *data, uint16_t szBits) {
-    if (szBits < 8) return;
+    if (szBits < ((1 + NFC_TAG_14A_CRC_LENGTH) * 8) || (szBits & 0x07) != 0) return;
+
     uint16_t szBytes = szBits / 8;
+    if (!nfc_tag_14a_checks_crc(data, szBytes)) return;
+    szBytes -= NFC_TAG_14A_CRC_LENGTH;
+
     uint8_t pcb = data[0];
 
     if (is_sblock(pcb)) {
@@ -1284,7 +1288,6 @@ static void nfc_cos_state_handler(uint8_t *data, uint16_t szBits) {
 
 nfc_tag_14a_coll_res_reference_t *nfc_cos_get_coll_res(void) {
     if (m_info == NULL) return NULL;
-    ensure_valid_fs();
     m_shadow_coll_res.sak = m_info->res_coll.sak;
     m_shadow_coll_res.atqa = m_info->res_coll.atqa;
     m_shadow_coll_res.uid = m_info->res_coll.uid;

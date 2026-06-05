@@ -35,6 +35,12 @@ bool is_valid_uid_size(uint8_t uid_length) {
            uid_length == NFC_TAG_14A_UID_TRIPLE_SIZE;
 }
 
+bool nfc_tag_14a_checks_crc(uint8_t *pbtData, size_t szLen) {
+    (void)pbtData;
+    (void)szLen;
+    return true;
+}
+
 static void expect_hex(const uint8_t *got, uint16_t got_len, const uint8_t *want, uint16_t want_len) {
     if (got_len != want_len || memcmp(got, want, want_len) != 0) {
         fprintf(stderr, "response mismatch\n got:");
@@ -201,6 +207,38 @@ int main(void) {
     len = nfc_cos_process_apdu(select_aid, sizeof(select_aid), resp, sizeof(resp));
     assert(len >= 2);
     assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+
+    const uint8_t root_one[] = {0x31};
+    const uint8_t child_one[] = {0x32, 0x33};
+    assert(nfc_cos_create_file(0x3F00, 0x0001, NFC_COS_FILE_TYPE_EF_BINARY,
+                               0, 0, NULL, 0, root_one, sizeof(root_one)) == STATUS_SUCCESS);
+    assert(nfc_cos_create_file(0x1001, 0x0001, NFC_COS_FILE_TYPE_EF_BINARY,
+                               0, 0, NULL, 0, child_one, sizeof(child_one)) == STATUS_SUCCESS);
+
+    const uint8_t select_mf[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x3F, 0x00};
+    len = nfc_cos_process_apdu(select_mf, sizeof(select_mf), resp, sizeof(resp));
+    assert(len >= 2);
+    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    const uint8_t select_dup_ef[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x00, 0x01};
+    len = nfc_cos_process_apdu(select_dup_ef, sizeof(select_dup_ef), resp, sizeof(resp));
+    assert(len >= 2);
+    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    const uint8_t read_one[] = {0x00, 0xB0, 0x00, 0x00, 0x01};
+    len = nfc_cos_process_apdu(read_one, sizeof(read_one), resp, sizeof(resp));
+    const uint8_t root_one_want[] = {0x31, 0x90, 0x00};
+    expect_hex(resp, len, root_one_want, sizeof(root_one_want));
+
+    const uint8_t select_df_1001[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x10, 0x01};
+    len = nfc_cos_process_apdu(select_df_1001, sizeof(select_df_1001), resp, sizeof(resp));
+    assert(len >= 2);
+    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    len = nfc_cos_process_apdu(select_dup_ef, sizeof(select_dup_ef), resp, sizeof(resp));
+    assert(len >= 2);
+    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    const uint8_t read_two[] = {0x00, 0xB0, 0x00, 0x00, 0x02};
+    len = nfc_cos_process_apdu(read_two, sizeof(read_two), resp, sizeof(resp));
+    const uint8_t child_one_want[] = {0x32, 0x33, 0x90, 0x00};
+    expect_hex(resp, len, child_one_want, sizeof(child_one_want));
 
     assert(nfc_cos_set_write_enabled(false) == STATUS_SUCCESS);
     assert(nfc_cos_data_factory(0, TAG_TYPE_HF14A_COS));
