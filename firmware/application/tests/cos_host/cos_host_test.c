@@ -108,6 +108,14 @@ int main(void) {
     for (uint16_t i = 0; i < sizeof(big_read); i++) {
         assert(big_read[i] == (uint8_t)((4090 + i) & 0xFF));
     }
+    const uint8_t select_big_ef[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x02, 0x02};
+    len = nfc_cos_process_apdu(select_big_ef, sizeof(select_big_ef), resp, sizeof(resp));
+    expect_hex(resp, len, ok, sizeof(ok));
+    const uint8_t read_big_256[] = {0x00, 0xB0, 0x00, 0x00, 0x00};
+    len = nfc_cos_process_apdu(read_big_256, sizeof(read_big_256), resp, sizeof(resp));
+    assert(len == 258);
+    for (uint16_t i = 0; i < 256; i++) assert(resp[i] == (uint8_t)(i & 0xFF));
+    assert(resp[256] == 0x90 && resp[257] == 0x00);
 
     uint8_t rec[18];
     for (uint8_t i = 0; i < sizeof(rec); i++) rec[i] = (uint8_t)(i + 1);
@@ -147,8 +155,7 @@ int main(void) {
 
     const uint8_t select_record_ef[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x00, 0x04};
     len = nfc_cos_process_apdu(select_record_ef, sizeof(select_record_ef), resp, sizeof(resp));
-    assert(len >= 2);
-    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    expect_hex(resp, len, ok, sizeof(ok));
 
     const uint8_t read_binary_on_record[] = {0x00, 0xB0, 0x00, 0x00, 0x00};
     len = nfc_cos_process_apdu(read_binary_on_record, sizeof(read_binary_on_record), resp, sizeof(resp));
@@ -205,8 +212,7 @@ int main(void) {
                                0, 0, aid, sizeof(aid), NULL, 0) == STATUS_SUCCESS);
     const uint8_t select_aid[] = {0x00, 0xA4, 0x04, 0x00, 0x04, 0xA0, 0x00, 0x00, 0x01, 0x00};
     len = nfc_cos_process_apdu(select_aid, sizeof(select_aid), resp, sizeof(resp));
-    assert(len >= 2);
-    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    expect_hex(resp, len, ok, sizeof(ok));
 
     const uint8_t root_one[] = {0x31};
     const uint8_t child_one[] = {0x32, 0x33};
@@ -217,12 +223,10 @@ int main(void) {
 
     const uint8_t select_mf[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x3F, 0x00};
     len = nfc_cos_process_apdu(select_mf, sizeof(select_mf), resp, sizeof(resp));
-    assert(len >= 2);
-    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    expect_hex(resp, len, ok, sizeof(ok));
     const uint8_t select_dup_ef[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x00, 0x01};
     len = nfc_cos_process_apdu(select_dup_ef, sizeof(select_dup_ef), resp, sizeof(resp));
-    assert(len >= 2);
-    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    expect_hex(resp, len, ok, sizeof(ok));
     const uint8_t read_one[] = {0x00, 0xB0, 0x00, 0x00, 0x01};
     len = nfc_cos_process_apdu(read_one, sizeof(read_one), resp, sizeof(resp));
     const uint8_t root_one_want[] = {0x31, 0x90, 0x00};
@@ -230,11 +234,9 @@ int main(void) {
 
     const uint8_t select_df_1001[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x10, 0x01};
     len = nfc_cos_process_apdu(select_df_1001, sizeof(select_df_1001), resp, sizeof(resp));
-    assert(len >= 2);
-    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    expect_hex(resp, len, ok, sizeof(ok));
     len = nfc_cos_process_apdu(select_dup_ef, sizeof(select_dup_ef), resp, sizeof(resp));
-    assert(len >= 2);
-    assert(resp[len - 2] == 0x90 && resp[len - 1] == 0x00);
+    expect_hex(resp, len, ok, sizeof(ok));
     const uint8_t read_two[] = {0x00, 0xB0, 0x00, 0x00, 0x02};
     len = nfc_cos_process_apdu(read_two, sizeof(read_two), resp, sizeof(resp));
     const uint8_t child_one_want[] = {0x32, 0x33, 0x90, 0x00};
