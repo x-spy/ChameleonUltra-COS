@@ -29,6 +29,10 @@ void nfc_tag_14a_tx_bytes(uint8_t *data, uint32_t bytes, bool appendCrc) {
     (void)appendCrc;
 }
 
+void nfc_tag_14a_set_reset_enable(bool enable) {
+    (void)enable;
+}
+
 bool is_valid_uid_size(uint8_t uid_length) {
     return uid_length == NFC_TAG_14A_UID_SINGLE_SIZE ||
            uid_length == NFC_TAG_14A_UID_DOUBLE_SIZE ||

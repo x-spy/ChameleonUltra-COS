@@ -118,6 +118,7 @@ static uint8_t m_challenge_len = 0;
 static uint8_t m_block_num = 0;
 static bool m_cid_supported = false;
 static uint8_t m_cid = 0;
+static uint8_t m_apdu_work_buf[NFC_COS_MAX_APDU];
 static uint8_t m_resp_buf[NFC_COS_MAX_APDU];
 static uint8_t m_tx_buf[NFC_COS_MAX_APDU + 4];
 static uint16_t m_resp_len = 0;
@@ -316,6 +317,13 @@ static uint16_t sw_correct_length(uint8_t *resp, uint16_t resp_max, uint16_t len
     return sw_only(resp, resp_max, (uint16_t)(0x6C00u | (len == 256 ? 0x00 : (len & 0xFF))));
 }
 
+static const uint8_t *stage_apdu_data(const cos_apdu_case_t *parsed) {
+    if (parsed == NULL || !parsed->has_lc || parsed->data == NULL) return NULL;
+    if ((uint16_t)parsed->lc > sizeof(m_apdu_work_buf)) return NULL;
+    memcpy(m_apdu_work_buf, parsed->data, parsed->lc);
+    return m_apdu_work_buf;
+}
+
 static bool is_df_type(uint8_t type) {
     return type == NFC_COS_FILE_TYPE_MF || type == NFC_COS_FILE_TYPE_DF;
 }
@@ -431,6 +439,7 @@ static bool find_record(const nfc_cos_file_entry_t *e, uint8_t record_no,
 static bool compact_pool_with_resize(uint8_t resize_idx, uint16_t new_alloc_len) {
     if (m_info == NULL) return false;
     uint8_t *pool = cos_pool();
+    uint16_t old_pool_used = m_info->pool_used;
     uint16_t used = 0;
     bool move_upward = false;
     uint8_t move_count = 0;
@@ -491,8 +500,8 @@ static bool compact_pool_with_resize(uint8_t resize_idx, uint16_t new_alloc_len)
         }
     }
 
-    if (used < current_pool_capacity()) {
-        memset(&pool[used], 0, current_pool_capacity() - used);
+    if (used < old_pool_used) {
+        memset(&pool[used], 0, old_pool_used - used);
     }
     m_info->pool_used = used;
     return true;
@@ -501,6 +510,25 @@ static bool compact_pool_with_resize(uint8_t resize_idx, uint16_t new_alloc_len)
 static bool ensure_file_capacity(uint8_t idx, uint16_t len) {
     nfc_cos_file_entry_t *e = &m_info->files[idx];
     if (len <= e->alloc_len) return true;
+
+    if (e->alloc_len == 0) {
+        uint32_t new_end = (uint32_t)m_info->pool_used + len;
+        if (new_end <= current_pool_capacity()) {
+            e->data_offset = m_info->pool_used;
+            e->alloc_len = len;
+            m_info->pool_used = (uint16_t)new_end;
+            return true;
+        }
+    } else {
+        uint32_t old_end = (uint32_t)e->data_offset + e->alloc_len;
+        uint32_t new_end = (uint32_t)e->data_offset + len;
+        if (old_end == m_info->pool_used && new_end <= current_pool_capacity()) {
+            e->alloc_len = len;
+            m_info->pool_used = (uint16_t)new_end;
+            return true;
+        }
+    }
+
     return compact_pool_with_resize(idx, len);
 }
 
@@ -824,6 +852,23 @@ static uint8_t update_record_by_index(uint8_t idx, uint8_t record_no,
     return STATUS_SUCCESS;
 }
 
+static uint8_t append_record_by_index(uint8_t idx, const uint8_t *data, uint16_t data_len) {
+    if (data == NULL || data_len == 0) return STATUS_PAR_ERR;
+    if (data_len > UINT16_MAX - 2) return STATUS_MEM_ERR;
+    nfc_cos_file_entry_t *e = &m_info->files[idx];
+    if (e->type != NFC_COS_FILE_TYPE_EF_RECORD) return STATUS_PAR_ERR;
+    if (e->record_size != 0 && data_len != e->record_size) return STATUS_PAR_ERR;
+
+    uint16_t old_len = e->data_len;
+    uint16_t new_len = old_len + 2 + data_len;
+    if (new_len < old_len || !ensure_file_capacity(idx, new_len)) return STATUS_MEM_ERR;
+    e = &m_info->files[idx];
+    put_be16(&cos_pool()[e->data_offset + old_len], data_len);
+    memcpy(&cos_pool()[e->data_offset + old_len + 2], data, data_len);
+    e->data_len = new_len;
+    return STATUS_SUCCESS;
+}
+
 static uint16_t apdu_read_binary(const uint8_t *apdu, const cos_apdu_case_t *parsed,
                                  uint8_t *resp, uint16_t resp_max) {
     if (parsed->has_lc) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
@@ -859,6 +904,9 @@ static uint16_t apdu_update_binary(const uint8_t *apdu, const cos_apdu_case_t *p
     if ((uint32_t)offset + parsed->lc > UINT16_MAX) {
         return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
     }
+    const uint8_t *write_data = stage_apdu_data(parsed);
+    if (write_data == NULL) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+
     uint16_t new_len = offset + parsed->lc;
     if (!ensure_file_capacity(idx, new_len)) {
         return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
@@ -867,7 +915,7 @@ static uint16_t apdu_update_binary(const uint8_t *apdu, const cos_apdu_case_t *p
     if (offset > e->data_len) {
         memset(&cos_pool()[e->data_offset + e->data_len], 0, offset - e->data_len);
     }
-    memcpy(&cos_pool()[e->data_offset + offset], parsed->data, parsed->lc);
+    memcpy(&cos_pool()[e->data_offset + offset], write_data, parsed->lc);
     if (new_len > e->data_len) e->data_len = new_len;
     return sw_only(resp, resp_max, SW_SUCCESS);
 }
@@ -903,7 +951,10 @@ static uint16_t apdu_append_record(const uint8_t *apdu, const cos_apdu_case_t *p
     cos_ef_res_t res = resolve_record_ef(apdu[3], true, &idx);
     if (res != COS_EF_RES_OK) return sw_for_ef_res(res, resp, resp_max);
 
-    uint8_t st = nfc_cos_append_record(m_info->files[idx].fid, parsed->data, parsed->lc);
+    const uint8_t *write_data = stage_apdu_data(parsed);
+    if (write_data == NULL) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+
+    uint8_t st = append_record_by_index(idx, write_data, parsed->lc);
     if (st == STATUS_SUCCESS) return sw_only(resp, resp_max, SW_SUCCESS);
     if (st == STATUS_MEM_ERR) return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
     return sw_only(resp, resp_max, SW_WRONG_LENGTH);
@@ -919,7 +970,10 @@ static uint16_t apdu_update_record(const uint8_t *apdu, const cos_apdu_case_t *p
     if (res != COS_EF_RES_OK) return sw_for_ef_res(res, resp, resp_max);
 
     bool record_not_found = false;
-    uint8_t st = update_record_by_index(idx, apdu[2], parsed->data, parsed->lc, &record_not_found);
+    const uint8_t *write_data = stage_apdu_data(parsed);
+    if (write_data == NULL) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+
+    uint8_t st = update_record_by_index(idx, apdu[2], write_data, parsed->lc, &record_not_found);
     if (record_not_found) return sw_only(resp, resp_max, SW_RECORD_NOT_FOUND);
     if (st == STATUS_SUCCESS) return sw_only(resp, resp_max, SW_SUCCESS);
     if (st == STATUS_MEM_ERR) return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
@@ -1103,18 +1157,7 @@ uint8_t nfc_cos_append_record(uint16_t fid, const uint8_t *data, uint16_t data_l
     if (idx == NFC_COS_INVALID_IDX || m_info->files[idx].type != NFC_COS_FILE_TYPE_EF_RECORD) {
         return STATUS_PAR_ERR;
     }
-    if (data_len == 0) return STATUS_PAR_ERR;
-    if (data_len > UINT16_MAX - 2) return STATUS_MEM_ERR;
-    nfc_cos_file_entry_t *e = &m_info->files[idx];
-    if (e->record_size != 0 && data_len != e->record_size) return STATUS_PAR_ERR;
-    uint16_t old_len = e->data_len;
-    uint16_t new_len = old_len + 2 + data_len;
-    if (new_len < old_len || !ensure_file_capacity(idx, new_len)) return STATUS_MEM_ERR;
-    e = &m_info->files[idx];
-    put_be16(&cos_pool()[e->data_offset + old_len], data_len);
-    memcpy(&cos_pool()[e->data_offset + old_len + 2], data, data_len);
-    e->data_len = new_len;
-    return STATUS_SUCCESS;
+    return append_record_by_index(idx, data, data_len);
 }
 
 uint16_t nfc_cos_list_files(uint8_t *out, uint16_t out_max) {
@@ -1413,6 +1456,7 @@ int nfc_cos_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
         .cb_reset = nfc_cos_reset_handler,
     };
     nfc_tag_14a_set_handler(&handler);
+    nfc_tag_14a_set_reset_enable(true);
     NRF_LOG_INFO("COS loadcb OK: files=%d pool=%d/%d write=%d",
                  m_info->file_count, m_info->pool_used, m_info->pool_capacity, m_info->write_enabled);
     return cos_header_size();
