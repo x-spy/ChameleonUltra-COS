@@ -50,12 +50,12 @@ NRF_LOG_MODULE_REGISTER();
 /* ISO14443-4 PCB constants. */
 #define PCB_IBLOCK_MASK     0xC0
 #define PCB_IBLOCK_VAL      0x00
-#define PCB_CID_FOLLOWING   0x10
-#define PCB_NAD_FOLLOWING   0x08
-#define PCB_CHAIN           0x20
+#define PCB_CID_FOLLOWING   0x08
+#define PCB_NAD_FOLLOWING   0x04
+#define PCB_CHAIN           0x10
 #define PCB_BLOCK_NUM       0x01
 #define PCB_SBLOCK_VAL      0xC0
-#define PCB_SBLOCK_WTX      0x30
+#define PCB_SBLOCK_WTX      0xF2
 #define PCB_SBLOCK_DESELECT 0xC2
 #define PCB_RBLOCK_NAK      0x10
 #define WTX_VALUE           0x3B
@@ -631,6 +631,39 @@ static bool parse_short_apdu(const uint8_t *apdu, uint16_t len, cos_apdu_case_t 
     return false;
 }
 
+static uint16_t build_df_fci(uint8_t idx, uint8_t *resp, uint16_t resp_max) {
+    if (resp_max < 2) return 0;
+    nfc_cos_file_entry_t *e = &m_info->files[idx];
+    if (e->type != NFC_COS_FILE_TYPE_DF || e->aid_len == 0) {
+        return sw_only(resp, resp_max, SW_SUCCESS);
+    }
+
+    uint16_t body_len = 2u + e->aid_len + 14u;
+    if ((uint32_t)body_len + 4u > resp_max || body_len > 0xFFu) {
+        return sw_only(resp, resp_max, SW_WRONG_LENGTH);
+    }
+
+    uint16_t off = 0;
+    resp[off++] = 0x6F;
+    resp[off++] = (uint8_t)body_len;
+    resp[off++] = 0x84;
+    resp[off++] = e->aid_len;
+    memcpy(&resp[off], e->aid, e->aid_len);
+    off += e->aid_len;
+    resp[off++] = 0xA5;
+    resp[off++] = 0x0C;
+    resp[off++] = 0x9F;
+    resp[off++] = 0x08;
+    resp[off++] = 0x01;
+    resp[off++] = 0x02;
+    resp[off++] = 0x9F;
+    resp[off++] = 0x0C;
+    resp[off++] = 0x05;
+    memset(&resp[off], 0, 5);
+    off += 5;
+    return append_sw(resp, off, resp_max, SW_SUCCESS);
+}
+
 static uint16_t apdu_select(const uint8_t *apdu, const cos_apdu_case_t *parsed,
                             uint8_t *resp, uint16_t resp_max) {
     uint8_t p1 = apdu[2];
@@ -673,7 +706,7 @@ static uint16_t apdu_select(const uint8_t *apdu, const cos_apdu_case_t *parsed,
     } else {
         m_selected_ef = idx;
     }
-    return sw_only(resp, resp_max, SW_SUCCESS);
+    return build_df_fci(idx, resp, resp_max);
 }
 
 static cos_ef_res_t resolve_binary_ef(uint8_t p1, uint8_t p2, uint16_t *offset, uint8_t *out_idx) {
@@ -1252,12 +1285,12 @@ static void nfc_cos_state_handler(uint8_t *data, uint16_t szBits) {
     uint8_t pcb = data[0];
 
     if (is_sblock(pcb)) {
-        if ((pcb & 0xF7) == PCB_SBLOCK_DESELECT) {
+        if ((pcb & (uint8_t)~PCB_CID_FOLLOWING) == PCB_SBLOCK_DESELECT) {
             nfc_tag_14a_tx_bytes(data, szBytes, true);
             nfc_cos_reset_handler();
             return;
         }
-        if ((pcb & 0x3F) == (PCB_SBLOCK_WTX & 0x3F)) {
+        if ((pcb & (uint8_t)~PCB_CID_FOLLOWING) == PCB_SBLOCK_WTX) {
             uint8_t wtxm = (szBytes > 1) ? data[szBytes - 1] & 0x3F : WTX_VALUE;
             uint8_t resp[3];
             uint8_t off = 0;
@@ -1291,11 +1324,23 @@ static void nfc_cos_state_handler(uint8_t *data, uint16_t szBits) {
 
     uint8_t offset = 1;
     if (has_cid) {
+        if (offset >= szBytes) {
+            send_rack();
+            return;
+        }
         m_cid_supported = true;
         m_cid = data[offset] & 0x0F;
         offset++;
+    } else {
+        m_cid_supported = false;
     }
-    if (has_nad) offset++;
+    if (has_nad) {
+        if (offset >= szBytes) {
+            send_rack();
+            return;
+        }
+        offset++;
+    }
     if (offset >= szBytes) {
         send_rack();
         return;

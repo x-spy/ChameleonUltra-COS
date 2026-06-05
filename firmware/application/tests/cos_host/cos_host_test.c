@@ -208,11 +208,16 @@ int main(void) {
     assert(resp[8] == 0x90 && resp[9] == 0x00);
 
     const uint8_t aid[] = {0xA0, 0x00, 0x00, 0x01};
+    const uint8_t aid_fci[] = {
+        0x6F, 0x14, 0x84, 0x04, 0xA0, 0x00, 0x00, 0x01,
+        0xA5, 0x0C, 0x9F, 0x08, 0x01, 0x02, 0x9F, 0x0C,
+        0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x90, 0x00,
+    };
     assert(nfc_cos_create_file(0x3F00, 0x1001, NFC_COS_FILE_TYPE_DF,
                                0, 0, aid, sizeof(aid), NULL, 0) == STATUS_SUCCESS);
     const uint8_t select_aid[] = {0x00, 0xA4, 0x04, 0x00, 0x04, 0xA0, 0x00, 0x00, 0x01, 0x00};
     len = nfc_cos_process_apdu(select_aid, sizeof(select_aid), resp, sizeof(resp));
-    expect_hex(resp, len, ok, sizeof(ok));
+    expect_hex(resp, len, aid_fci, sizeof(aid_fci));
 
     const uint8_t root_one[] = {0x31};
     const uint8_t child_one[] = {0x32, 0x33};
@@ -238,7 +243,7 @@ int main(void) {
 
     const uint8_t select_df_1001[] = {0x00, 0xA4, 0x00, 0x00, 0x02, 0x10, 0x01};
     len = nfc_cos_process_apdu(select_df_1001, sizeof(select_df_1001), resp, sizeof(resp));
-    expect_hex(resp, len, ok, sizeof(ok));
+    expect_hex(resp, len, aid_fci, sizeof(aid_fci));
     const uint8_t read_child_two_by_sfi[] = {0x00, 0xB0, 0x82, 0x00, 0x20};
     len = nfc_cos_process_apdu(read_child_two_by_sfi, sizeof(read_child_two_by_sfi), resp, sizeof(resp));
     uint8_t child_two_want[34];
