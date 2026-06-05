@@ -352,6 +352,13 @@ static uint8_t find_ef_by_sfi(uint16_t parent_fid, uint8_t sfi, uint8_t wanted_t
         if (wanted_type != 0 && e->type != wanted_type) continue;
         return i;
     }
+    for (uint8_t i = 0; i < NFC_COS_MAX_FILES; i++) {
+        nfc_cos_file_entry_t *e = &m_info->files[i];
+        if (!e->active || e->parent_fid != parent_fid || e->fid != sfi) continue;
+        if (!is_ef_type(e->type)) continue;
+        if (wanted_type != 0 && e->type != wanted_type) continue;
+        return i;
+    }
     return NFC_COS_INVALID_IDX;
 }
 
