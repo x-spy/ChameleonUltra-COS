@@ -70,6 +70,7 @@ int main(void) {
     srand(1);
     assert(nfc_cos_data_loadcb(TAG_TYPE_HF14A_COS, &buffer) > 0);
     assert(nfc_cos_is_write_enabled());
+    assert(nfc_cos_get_append_record_mode() == NFC_COS_APPEND_RECORD_OVERWRITE);
 
     uint8_t storage[NFC_COS_STORAGE_INFO_SIZE];
     assert(nfc_cos_storage_info(storage, sizeof(storage)) == NFC_COS_STORAGE_INFO_SIZE);
@@ -131,6 +132,7 @@ int main(void) {
     assert(nfc_cos_append_record(0x0004, rec, sizeof(rec) - 1) == STATUS_PAR_ERR);
 
     const uint8_t read_record[] = {0x00, 0xB2, 0x01, 0x24, 0x12};
+    const uint8_t read_second_record[] = {0x00, 0xB2, 0x02, 0x24, 0x12};
     len = nfc_cos_process_apdu(read_record, sizeof(read_record), resp, sizeof(resp));
     uint8_t record_want[20];
     memcpy(record_want, rec, sizeof(rec));
@@ -175,6 +177,22 @@ int main(void) {
     len = nfc_cos_process_apdu(append_record_apdu, sizeof(append_record_apdu), resp, sizeof(resp));
     expect_hex(resp, len, ok, sizeof(ok));
 
+    len = nfc_cos_process_apdu(read_record, sizeof(read_record), resp, sizeof(resp));
+    for (uint8_t i = 0; i < 18; i++) record_want[i] = (uint8_t)(0x80 + i);
+    expect_hex(resp, len, record_want, sizeof(record_want));
+    len = nfc_cos_process_apdu(read_second_record, sizeof(read_second_record), resp, sizeof(resp));
+    const uint8_t want_6a83[] = {0x6A, 0x83};
+    expect_hex(resp, len, want_6a83, sizeof(want_6a83));
+
+    assert(nfc_cos_set_append_record_mode(NFC_COS_APPEND_RECORD_EXPAND) == STATUS_SUCCESS);
+    assert(nfc_cos_get_append_record_mode() == NFC_COS_APPEND_RECORD_EXPAND);
+    for (uint8_t i = 0; i < 18; i++) append_record_apdu[5 + i] = (uint8_t)(0x20 + i);
+    len = nfc_cos_process_apdu(append_record_apdu, sizeof(append_record_apdu), resp, sizeof(resp));
+    expect_hex(resp, len, ok, sizeof(ok));
+    len = nfc_cos_process_apdu(read_second_record, sizeof(read_second_record), resp, sizeof(resp));
+    for (uint8_t i = 0; i < 18; i++) record_want[i] = (uint8_t)(0x20 + i);
+    expect_hex(resp, len, record_want, sizeof(record_want));
+
     uint8_t append_record_bad_apdu[5 + 17];
     append_record_bad_apdu[0] = 0x00;
     append_record_bad_apdu[1] = 0xE2;
@@ -196,14 +214,12 @@ int main(void) {
     len = nfc_cos_process_apdu(update_record_apdu, sizeof(update_record_apdu), resp, sizeof(resp));
     expect_hex(resp, len, ok, sizeof(ok));
 
-    const uint8_t read_second_record[] = {0x00, 0xB2, 0x02, 0x24, 0x12};
     len = nfc_cos_process_apdu(read_second_record, sizeof(read_second_record), resp, sizeof(resp));
     for (uint8_t i = 0; i < 18; i++) record_want[i] = (uint8_t)(0x40 + i);
     expect_hex(resp, len, record_want, sizeof(record_want));
 
     update_record_apdu[2] = 0x03;
     len = nfc_cos_process_apdu(update_record_apdu, sizeof(update_record_apdu), resp, sizeof(resp));
-    const uint8_t want_6a83[] = {0x6A, 0x83};
     expect_hex(resp, len, want_6a83, sizeof(want_6a83));
 
     const uint8_t challenge[] = {0x00, 0x84, 0x00, 0x00, 0x08};
@@ -265,6 +281,7 @@ int main(void) {
     assert(nfc_cos_set_write_enabled(false) == STATUS_SUCCESS);
     assert(nfc_cos_data_factory(0, TAG_TYPE_HF14A_COS));
     assert(nfc_cos_is_write_enabled());
+    assert(nfc_cos_get_append_record_mode() == NFC_COS_APPEND_RECORD_OVERWRITE);
 
     printf("cos_host_test: ok\n");
     return 0;

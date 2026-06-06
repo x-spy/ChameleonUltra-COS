@@ -410,12 +410,19 @@ class ChameleonCMD:
     def hf14a_cos_get_config(self):
         resp = self.device.send_cmd_sync(Command.HF14A_COS_GET_CONFIG)
         if resp.status == Status.SUCCESS and resp.data:
-            resp.parsed = {'write_enabled': bool(resp.data[0])}
+            append_mode = resp.data[1] if len(resp.data) > 1 else 0
+            resp.parsed = {
+                'write_enabled': bool(resp.data[0]),
+                'append_record_mode': append_mode,
+                'append_record_mode_name': 'expand' if append_mode == 1 else 'overwrite',
+            }
         return resp
 
-    def hf14a_cos_set_config(self, write_enabled: bool):
-        return self.device.send_cmd_sync(Command.HF14A_COS_SET_CONFIG,
-                                         bytes([1 if write_enabled else 0]))
+    def hf14a_cos_set_config(self, write_enabled: bool, append_record_mode: int = None):
+        payload = bytes([1 if write_enabled else 0])
+        if append_record_mode is not None:
+            payload += bytes([append_record_mode & 0xFF])
+        return self.device.send_cmd_sync(Command.HF14A_COS_SET_CONFIG, payload)
 
     def hf14a_cos_storage(self):
         resp = self.device.send_cmd_sync(Command.HF14A_COS_STORAGE)

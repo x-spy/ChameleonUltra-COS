@@ -86,7 +86,7 @@ typedef struct {
     uint8_t version;
     uint8_t write_enabled;
     uint8_t file_count;
-    uint8_t reserved;
+    uint8_t append_record_mode;
     uint16_t pool_used;
     uint16_t pool_capacity;
     nfc_tag_14a_coll_res_entity_t res_coll;
@@ -163,6 +163,11 @@ static uint16_t normalized_pool_capacity(uint16_t capacity) {
     if (capacity < NFC_COS_MIN_DATA_POOL_SIZE) return NFC_COS_MIN_DATA_POOL_SIZE;
     if (capacity > NFC_COS_DATA_POOL_SIZE) return NFC_COS_DATA_POOL_SIZE;
     return align_pool_down(capacity);
+}
+
+static uint8_t normalized_append_record_mode(uint8_t mode) {
+    return mode == NFC_COS_APPEND_RECORD_EXPAND ?
+           NFC_COS_APPEND_RECORD_EXPAND : NFC_COS_APPEND_RECORD_OVERWRITE;
 }
 
 static uint16_t current_pool_capacity(void) {
@@ -600,6 +605,7 @@ static void set_factory_header(nfc_cos_persisted_header_t *header, uint16_t pool
     header->magic = NFC_COS_MAGIC;
     header->version = NFC_COS_VERSION;
     header->write_enabled = 1;
+    header->append_record_mode = NFC_COS_APPEND_RECORD_OVERWRITE;
     header->pool_capacity = normalized_pool_capacity(pool_capacity);
     header->pool_used = 0;
     header->file_count = 1;
@@ -625,6 +631,7 @@ static void ensure_valid_fs(void) {
             m_info->pool_capacity <= NFC_COS_DATA_POOL_SIZE &&
             m_info->pool_used <= m_info->pool_capacity) {
         m_info->pool_capacity = normalized_pool_capacity(m_info->pool_capacity);
+        m_info->append_record_mode = normalized_append_record_mode(m_info->append_record_mode);
         cos_refresh_dynamic_capacity();
         return;
     }
@@ -869,6 +876,17 @@ static uint8_t append_record_by_index(uint8_t idx, const uint8_t *data, uint16_t
     return STATUS_SUCCESS;
 }
 
+static uint8_t append_record_for_apdu(uint8_t idx, const uint8_t *data, uint16_t data_len) {
+    if (m_info->append_record_mode == NFC_COS_APPEND_RECORD_EXPAND ||
+            record_count(&m_info->files[idx]) == 0) {
+        return append_record_by_index(idx, data, data_len);
+    }
+
+    bool record_not_found = false;
+    uint8_t st = update_record_by_index(idx, 1, data, data_len, &record_not_found);
+    return record_not_found ? STATUS_PAR_ERR : st;
+}
+
 static uint16_t apdu_read_binary(const uint8_t *apdu, const cos_apdu_case_t *parsed,
                                  uint8_t *resp, uint16_t resp_max) {
     if (parsed->has_lc) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
@@ -954,7 +972,7 @@ static uint16_t apdu_append_record(const uint8_t *apdu, const cos_apdu_case_t *p
     const uint8_t *write_data = stage_apdu_data(parsed);
     if (write_data == NULL) return sw_only(resp, resp_max, SW_WRONG_LENGTH);
 
-    uint8_t st = append_record_by_index(idx, write_data, parsed->lc);
+    uint8_t st = append_record_for_apdu(idx, write_data, parsed->lc);
     if (st == STATUS_SUCCESS) return sw_only(resp, resp_max, SW_SUCCESS);
     if (st == STATUS_MEM_ERR) return sw_only(resp, resp_max, SW_NOT_ENOUGH_MEMORY);
     return sw_only(resp, resp_max, SW_WRONG_LENGTH);
@@ -1225,6 +1243,22 @@ uint8_t nfc_cos_set_write_enabled(bool enabled) {
 
 bool nfc_cos_is_write_enabled(void) {
     return m_info != NULL && m_info->write_enabled != 0;
+}
+
+uint8_t nfc_cos_set_append_record_mode(uint8_t mode) {
+    if (m_info == NULL) return STATUS_INVALID_SLOT_TYPE;
+    ensure_valid_fs();
+    if (mode != NFC_COS_APPEND_RECORD_OVERWRITE && mode != NFC_COS_APPEND_RECORD_EXPAND) {
+        return STATUS_PAR_ERR;
+    }
+    m_info->append_record_mode = mode;
+    return STATUS_SUCCESS;
+}
+
+uint8_t nfc_cos_get_append_record_mode(void) {
+    if (m_info == NULL) return NFC_COS_APPEND_RECORD_OVERWRITE;
+    ensure_valid_fs();
+    return normalized_append_record_mode(m_info->append_record_mode);
 }
 
 static inline bool is_iblock(uint8_t pcb) {

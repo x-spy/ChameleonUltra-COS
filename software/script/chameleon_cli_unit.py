@@ -9104,14 +9104,31 @@ class COSConfig(COSSlotUnit):
         parser = ArgumentParserNoExit()
         parser.description = 'Get or set COS options'
         self.add_slot_args(parser)
-        group = parser.add_mutually_exclusive_group()
-        group.add_argument('--write-enable', action='store_true', help='Allow APDU/CLI writes')
-        group.add_argument('--write-disable', action='store_true', help='Reject APDU/CLI writes')
+        write_group = parser.add_mutually_exclusive_group()
+        write_group.add_argument('--write-enable', action='store_true', help='Allow APDU/CLI writes')
+        write_group.add_argument('--write-disable', action='store_true', help='Reject APDU/CLI writes')
+        append_group = parser.add_mutually_exclusive_group()
+        append_group.add_argument('--append-overwrite', action='store_true',
+                                  help='APDU APPEND RECORD overwrites record 1')
+        append_group.add_argument('--append-expand', action='store_true',
+                                  help='APDU APPEND RECORD appends a new record')
         return parser
 
     def on_exec(self, args: argparse.Namespace):
-        if args.write_enable or args.write_disable:
-            resp = self.cmd.hf14a_cos_set_config(args.write_enable)
+        if args.write_enable or args.write_disable or args.append_overwrite or args.append_expand:
+            current = self.cmd.hf14a_cos_get_config()
+            if current.status != Status.SUCCESS:
+                print(f' {CR}Failed: {Status(current.status)}{C0}')
+                return
+            write_enabled = current.parsed['write_enabled']
+            if args.write_enable or args.write_disable:
+                write_enabled = args.write_enable
+            append_mode = current.parsed['append_record_mode']
+            if args.append_overwrite:
+                append_mode = 0
+            elif args.append_expand:
+                append_mode = 1
+            resp = self.cmd.hf14a_cos_set_config(write_enabled, append_mode)
             _cos_print_status(resp, 'COS config updated.')
             if resp.status == Status.SUCCESS:
                 self.cmd.slot_data_config_save()
@@ -9121,6 +9138,7 @@ class COSConfig(COSSlotUnit):
             print(f' {CR}Failed: {Status(resp.status)}{C0}')
             return
         print(f" {CG}Write enabled:{C0} {bool(resp.parsed['write_enabled'])}")
+        print(f" {CG}APPEND RECORD mode:{C0} {resp.parsed['append_record_mode_name']}")
 
 
 @cos.command('storage')

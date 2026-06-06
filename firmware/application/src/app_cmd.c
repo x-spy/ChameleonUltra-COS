@@ -3031,14 +3031,23 @@ static data_frame_tx_t *cmd_processor_hf14a_cos_file_list(uint16_t cmd, uint16_t
 static data_frame_tx_t *cmd_processor_hf14a_cos_get_config(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
     if (!active_hf_slot_is_cos()) return data_frame_make(cmd, STATUS_INVALID_SLOT_TYPE, 0, NULL);
     if (length != 0) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
-    uint8_t resp[1] = { nfc_cos_is_write_enabled() ? 1 : 0 };
+    uint8_t resp[2] = {
+        nfc_cos_is_write_enabled() ? 1 : 0,
+        nfc_cos_get_append_record_mode(),
+    };
     return data_frame_make(cmd, STATUS_SUCCESS, sizeof(resp), resp);
 }
 
 static data_frame_tx_t *cmd_processor_hf14a_cos_set_config(uint16_t cmd, uint16_t status, uint16_t length, uint8_t *data) {
     if (!active_hf_slot_is_cos()) return data_frame_make(cmd, STATUS_INVALID_SLOT_TYPE, 0, NULL);
-    if (length != 1 || data[0] > 1) return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    if ((length != 1 && length != 2) || data[0] > 1 ||
+            (length == 2 && data[1] > NFC_COS_APPEND_RECORD_EXPAND)) {
+        return data_frame_make(cmd, STATUS_PAR_ERR, 0, NULL);
+    }
     status = nfc_cos_set_write_enabled(data[0] != 0);
+    if (status == STATUS_SUCCESS && length == 2) {
+        status = nfc_cos_set_append_record_mode(data[1]);
+    }
     return data_frame_make(cmd, status, 0, NULL);
 }
 
