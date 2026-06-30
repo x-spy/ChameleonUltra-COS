@@ -1,6 +1,7 @@
 #include <hal/nrf_nfct.h>
 #include <nrfx_nfct.h>
 #include <nrf_gpio.h>
+#include "app_timer.h"
 
 #define NRF_LOG_MODULE_NAME nfc
 #include "nrf_log.h"
@@ -94,6 +95,12 @@ static uint8_t m_nfc_tx_buffer[MAX_NFC_TX_BUFFER_SIZE] = { 0x00 };
 static uint8_t m_uid_incomplete_sak[] = { 0x04, 0xda, 0x17 };
 // Reset nfc peripheral after field lost?
 static bool reset_if_field_lost = false; // default is 'false', Unless there is a genuine need for a reset.
+APP_TIMER_DEF(m_field_ready_hold_timer);
+static bool m_field_ready_hold_timer_created = false;
+static uint32_t m_field_ready_hold_ms = 0;
+static volatile bool m_field_ready_hold_active = false;
+static volatile bool m_field_lost_deferred = false;
+static void nfc_tag_14a_field_ready_hold_timeout(void *arg);
 
 
 /**
@@ -618,6 +625,53 @@ static inline void nrf_nfct_reset(void) {
                          NRF_NFCT_INT_TXFRAMEEND_MASK);
 }
 
+static void nfc_tag_14a_field_ready_hold_timer_init(void) {
+    if (m_field_ready_hold_timer_created) return;
+    ret_code_t err = app_timer_create(&m_field_ready_hold_timer,
+                                      APP_TIMER_MODE_SINGLE_SHOT,
+                                      nfc_tag_14a_field_ready_hold_timeout);
+    if (err == NRF_SUCCESS) {
+        m_field_ready_hold_timer_created = true;
+    }
+}
+
+static void nfc_tag_14a_field_ready_hold_start(void) {
+    if (m_field_ready_hold_ms == 0) return;
+    nfc_tag_14a_field_ready_hold_timer_init();
+    m_field_ready_hold_active = true;
+    m_field_lost_deferred = false;
+    if (m_field_ready_hold_timer_created) {
+        app_timer_stop(m_field_ready_hold_timer);
+        app_timer_start(m_field_ready_hold_timer, APP_TIMER_TICKS(m_field_ready_hold_ms), NULL);
+    }
+}
+
+static void nfc_tag_14a_field_lost_apply(void) {
+    g_is_tag_emulating = false;
+    // call sleep_timer_start *after* unsetting g_is_tag_emulating
+    sleep_timer_start(SLEEP_DELAY_MS_FIELD_NFC_LOST);
+
+    TAG_FIELD_LED_OFF()
+    m_tag_state_14a = NFC_TAG_STATE_14A_IDLE;
+
+    if (reset_if_field_lost) {
+        // Fix a bug where certain special conditions prevent triggering TX start events and actually transmit incorrect data to the card reader.
+        // After more more more testing, I found that simply going into sleep mode and restarting can restore work.
+        // Therefore, I suspect that there may be some issues with the NFC peripheral that require a reset to resolve.
+        nrf_nfct_reset();
+    }
+}
+
+static void nfc_tag_14a_field_ready_hold_timeout(void *arg) {
+    (void)arg;
+    m_field_ready_hold_active = false;
+    if (m_field_lost_deferred) {
+        m_field_lost_deferred = false;
+        nfc_tag_14a_field_lost_apply();
+        NRF_LOG_INFO("HF FIELD LOST");
+    }
+}
+
 static inline void nfc_fdt_reset(void) {
     // STOP TX
     *(volatile uint32_t *)0x40005010 = 0x01;
@@ -635,6 +689,7 @@ void nfc_tag_14a_event_callback(nrfx_nfct_evt_t const *p_event) {
     switch (p_event->evt_id) {
         case NRFX_NFCT_EVT_FIELD_DETECTED: {
             sleep_timer_stop();
+            nfc_tag_14a_field_ready_hold_start();
 
             g_is_tag_emulating = true;
             g_usb_led_marquee_enable = false;
@@ -659,20 +714,13 @@ void nfc_tag_14a_event_callback(nrfx_nfct_evt_t const *p_event) {
             break;
         }
         case NRFX_NFCT_EVT_FIELD_LOST: {
-            g_is_tag_emulating = false;
-            // call sleep_timer_start *after* unsetting g_is_tag_emulating
-            sleep_timer_start(SLEEP_DELAY_MS_FIELD_NFC_LOST);
-
-            TAG_FIELD_LED_OFF()
-            m_tag_state_14a = NFC_TAG_STATE_14A_IDLE;
-
-            if (reset_if_field_lost) {
-                // Fix a bug where certain special conditions prevent triggering TX start events and actually transmit incorrect data to the card reader.
-                // After more more more testing, I found that simply going into sleep mode and restarting can restore work.
-                // Therefore, I suspect that there may be some issues with the NFC peripheral that require a reset to resolve.
-                nrf_nfct_reset();
+            if (m_field_ready_hold_ms > 0 && m_field_ready_hold_active) {
+                m_field_lost_deferred = true;
+                NRF_LOG_INFO("HF FIELD LOST deferred");
+                break;
             }
 
+            nfc_tag_14a_field_lost_apply();
             NRF_LOG_INFO("HF FIELD LOST");
             break;
         }
@@ -809,4 +857,17 @@ void nfc_tag_14a_set_reset_enable(bool enable) {
 
 bool nfc_tag_14a_is_reset_enable() {
     return reset_if_field_lost;
+}
+
+void nfc_tag_14a_set_field_ready_hold(uint32_t hold_ms) {
+    m_field_ready_hold_ms = hold_ms;
+    if (hold_ms == 0) {
+        m_field_ready_hold_active = false;
+        m_field_lost_deferred = false;
+        if (m_field_ready_hold_timer_created) {
+            app_timer_stop(m_field_ready_hold_timer);
+        }
+    } else {
+        nfc_tag_14a_field_ready_hold_timer_init();
+    }
 }

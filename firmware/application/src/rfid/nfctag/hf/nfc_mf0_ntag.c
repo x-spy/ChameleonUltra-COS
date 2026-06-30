@@ -1181,6 +1181,7 @@ int nfc_tag_mf0_ntag_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *bu
             .cb_reset = nfc_tag_mf0_ntag_reset_handler,
         };
         nfc_tag_14a_set_handler(&handler_for_14a);
+        nfc_tag_14a_set_field_ready_hold(0);
         NRF_LOG_INFO("HF ntag data load finish.");
     } else {
         ASSERT(buffer->length == info_size);

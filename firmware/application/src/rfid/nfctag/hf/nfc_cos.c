@@ -1490,7 +1490,8 @@ int nfc_cos_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffer) {
         .cb_reset = nfc_cos_reset_handler,
     };
     nfc_tag_14a_set_handler(&handler);
-    nfc_tag_14a_set_reset_enable(true);
+    nfc_tag_14a_set_reset_enable(false);
+    nfc_tag_14a_set_field_ready_hold(5000);
     NRF_LOG_INFO("COS loadcb OK: files=%d pool=%d/%d write=%d",
                  m_info->file_count, m_info->pool_used, m_info->pool_capacity, m_info->write_enabled);
     return cos_header_size();

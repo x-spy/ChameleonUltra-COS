@@ -139,5 +139,6 @@ bool is_valid_uid_size(uint8_t uid_length);
 // Reset nfc peripheral after field lost
 void nfc_tag_14a_set_reset_enable(bool enable);
 bool nfc_tag_14a_is_reset_enable();
+void nfc_tag_14a_set_field_ready_hold(uint32_t hold_ms);
 
 #endif

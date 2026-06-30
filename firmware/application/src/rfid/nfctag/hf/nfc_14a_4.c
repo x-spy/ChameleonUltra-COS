@@ -397,6 +397,7 @@ int nfc_tag_14a_4_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffe
         .cb_reset     = nfc_tag_14a_4_reset_handler,
     };
     nfc_tag_14a_set_handler(&handler);
+    nfc_tag_14a_set_field_ready_hold(0);
     NRF_LOG_INFO("14A-4 loadcb OK: SAK=%02x uid_sz=%d static_resp=%d",
                  m_tag_information->res_coll.sak[0],
                  m_tag_information->res_coll.size,

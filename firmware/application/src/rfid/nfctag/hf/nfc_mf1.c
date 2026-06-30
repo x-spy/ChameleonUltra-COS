@@ -1148,6 +1148,7 @@ int nfc_tag_mf1_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffer)
             .cb_reset = nfc_tag_mf1_reset_handler,
         };
         nfc_tag_14a_set_handler(&handler_for_14a);
+        nfc_tag_14a_set_field_ready_hold(0);
         NRF_LOG_INFO("HF mf1 config 'field_off_do_reset' = %d", m_tag_information->config.field_off_do_reset);
         nfc_tag_14a_set_reset_enable(m_tag_information->config.field_off_do_reset);
         NRF_LOG_INFO("HF mf1 data load finish.");
