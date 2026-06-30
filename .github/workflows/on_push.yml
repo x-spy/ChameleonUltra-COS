@@ -35,12 +35,13 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           body: |
-            Auto-Generated DFU packages from latest `main` commit.
-            For development purposes only. 
-            These are not tested, here be dragons.
+            Unofficial ChameleonUltra-COS DFU packages from latest `main` commit.
+            This is a third-party fork build, not an official Chameleon Ultra release.
+            For authorized development and testing only.
+            These artifacts are not production-certified or endorsed by upstream.
             Built from commit ${{ github.sha }}
           tag_name: dev
-          name: Development release
+          name: ChameleonUltra-COS development release
           draft: false
           prerelease: true
           target_commitish: ${{ github.sha }}
@@ -72,9 +73,11 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           body: |
-            Auto-Generated DFU packages for Release ${{ github.ref_name }}
+            Unofficial ChameleonUltra-COS DFU packages for Release ${{ github.ref_name }}.
+            This is a third-party fork build, not an official Chameleon Ultra release.
+            Use only with hardware, readers, cards, and data you own or are authorized to test.
             Built from commit ${{ github.sha }}
-          name: Release ${{ github.ref_name }}
+          name: ChameleonUltra-COS Release ${{ github.ref_name }}
           draft: false
           target_commitish: ${{ github.sha }}
           generate_release_notes: true

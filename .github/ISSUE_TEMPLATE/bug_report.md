@@ -1,50 +1,49 @@
 ---
 name: Bug report
-about: Create a report to help us improve
+about: Report a ChameleonUltra-COS issue
 title: ''
-labels: ''
+labels: bug
 assignees: ''
 
 ---
 
-***Things to try before submitting a bug report***
+Before submitting:
 
-* read the [troubleshooting guide](https://github.com/RfidResearchGroup/ChameleonUltra/blob/main/docs/troubleshooting.md)
-* check existing [issues](https://github.com/RfidResearchGroup/ChameleonUltra/issues)
-* use the latest firmware and CLI
-* for issues specific to another client than the Python CLI, use the corresponding issue tracker. E.g. [here](https://github.com/GameTec-live/ChameleonUltraGUI/issues) for the ChameleonUltraGUI
-
-***Compilation problems***
-Try compiling with verbose. Use `make VERBOSE=1` for the firmware and the software/src tools.
-Include the verbose compilation logs.
-
-***flashing problems***
-Have you followed the instructions properly?
-
+- Confirm the issue is about this fork, ChameleonUltra-COS.
+- Do not include real production card dumps, keys, secrets, credentials, or personal data.
+- For upstream-only behavior, report to upstream Chameleon Ultra instead.
+- For security-sensitive issues, use private vulnerability reporting if available.
 
 **Describe the bug**
-A clear and concise description of what the bug is.
+A clear description of the problem.
 
-**To Reproduce**
-Steps to reproduce the behavior.  
-Explain it as you would do to someone not familiar with the problematic feature.  
-What is the abnormal behavior you observed?  
-E.g.
-1. Connect '....'
-2. Execute '....'
-3. Press button '....'
-4. See error '....'
+**Affected component**
+Firmware, CLI, COS file system, APDU handling, storage, build, documentation, or other.
+
+**To reproduce**
+Use synthetic data where possible.
+
+1. Connect or flash:
+2. Configure slot:
+3. Send command/APDU:
+4. Observe result:
 
 **Expected behavior**
-A clear and concise description of what you expected to happen.
+What should happen?
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem. For console text and logs, better to dump them as text than image. Attach files if too long.
+**Actual behavior**
+What happened instead?
 
-**Host (please complete the following information):**
- - OS and version
- - for compilation issues, the toolchain version
- - inside CLI run `hw version` and paste the output here
- 
+**Device and build**
+
+- Device model:
+- Firmware commit:
+- CLI commit:
+- OS and version:
+- Connection method:
+
+**Logs or traces**
+Paste text logs when possible. Do not attach sensitive dumps or keys.
+
 **Additional context**
-Add any other context about the problem here.
+Any other relevant details.

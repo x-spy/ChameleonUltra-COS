@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: Official channels Chameleon Ultra Community
-    url: https://github.com/RfidResearchGroup/ChameleonUltra#official-channels
-    about: Got questions? Ask in *official channels*, not in an issue
+  - name: Security report
+    url: https://github.com/x-spy/ChameleonUltra-COS/security
+    about: Report vulnerabilities privately when possible. Do not post secrets, keys, dumps, or exploit details in public issues.
+  - name: Upstream Chameleon Ultra
+    url: https://github.com/RfidResearchGroup/ChameleonUltra
+    about: Use upstream channels only for issues reproduced in upstream Chameleon Ultra, not for COS fork behavior.

@@ -2,7 +2,16 @@
 All notable changes to this project will be documented in this file.
 This project uses the changelog in accordance with [keepchangelog](http://keepachangelog.com/). Please use this to write notable changes, which is not the same as git commit log...
 
+## ChameleonUltra-COS fork note
+
+This changelog was inherited from upstream Chameleon Ultra and is kept for project history. ChameleonUltra-COS-specific changes are tracked in this fork's Git history, especially the `feat/cos-emulation` branch.
+
+This fork is unofficial and third-party. Entries below from upstream do not imply upstream endorsement or support for COS-specific behavior.
+
 ## [unreleased][unreleased]
+ - ChameleonUltra-COS fork: experimental COS-style ISO14443-A CPU card emulation and CLI management commands.
+ - ChameleonUltra-COS fork: per-slot COS storage, MF/DF/EF file trees, binary EF, record EF, APDU read/write/select/challenge handling.
+ - ChameleonUltra-COS fork: configurable APDU `APPEND RECORD` behavior and pulsed-field stabilization for COS mode.
  - Added IDTECK LF protocol support: tag emulation (PSK1 RF/32) and T55xx clone. No reader path yet; PSK demodulation on the envelope-only receive chain is left for a follow-up.
  - Added PAC/Stanley LF protocol support: read, emulate and T55xx clone (@kevihiiin, @danieltwagner)
  - Fix firmware application USB serial number (@taichunmin)

@@ -1,21 +1,69 @@
-# Chameleon Ultra Contribution guidelines
+# Contributing to ChameleonUltra-COS
 
-Any and all contributions are welcome!
+Contributions are welcome when they fit the scope and legal boundaries of this third-party fork.
 
-Heres a bit of info and a few guidelines to get you started:
+This repository is an unofficial fork of Chameleon Ultra. Do not present contributions, releases, builds, or support responses from this repository as official upstream Chameleon Ultra work.
 
-- General
-    - Avoid force pushes. Force pushes and "one commit" PRs not only make reviewing more annoying but also erase a significant part of the git history. This, among other things, makes future debugging and bisection a lot harder.
-    - Conventional commits. It is recommended to follow the [conventional commit](https://www.conventionalcommits.org/en/v1.0.0/) pattern when it comes to commit messages. While this is not strictly enforced, its highly recommended and a good habbit.
-    - Atomic PRs. To help keep an overview and avoid conflicts, it is highly encouraged to file Atomic PRs. Atomic PRs are:
-        - Focused Scope: It targets a single, well-defined change, making it easier to understand and review.
-        - Minimal Size: It contains only the necessary code modifications to achieve its goal, avoiding unrelated changes.
-        - Independent: It should be able to stand on its own without depending on other unmerged PRs, reviewed, and merged independently.
-        - Self-Tested: each PR should include an appropriate set of unit tests that tests the changes. (optional but highly appreciated)
-    - Atomic Commits. Similar thing as atomic PRs. When you are done with a feature, commit. Made a working change? commit. Git commits are basically free. Doing frequent commits at sensible points throughout development not only helps you keep track of progress but also saves progress and changes so you can revert when something goes wrong. It also helps when debugging and bisecting as more granular commits allow for easier issue location.
+## Scope
 
-- CLI
-    - The recommended packagemanager is [UV](https://docs.astral.sh/uv/) (from astralsh). You may use the manager of your choice, but when adding new dependencies they must be added to the UV lock file and pyproject toml as well.
-    - Type safety is important. The CLI should be typesafe. Python 3.9+ offer a wide variety of type declarations. Metas [pyrefly](https://pyrefly.org/) is used to do type validation. It is recommended to install the appropriate vscode extension and check your types before opening a PR.
-    - Formatting matters. Mostly. While pixelpeeping and exact rules are annoying and unnescesary, format your code in a readable and logical way. [Ruff](https://docs.astral.sh/ruff/) is used to enforce various formatting rules. You may install the Ruff vscode extension or use the CLI to format before opening a PR.
-    - Avoid extra packages. Almost everyone knows the "meme" of the javascript ["is-even"](https://www.npmjs.com/package/is-even) package. While it is encouraged and makes sense to use packages where appropriate, just installing packages for the hell of it even if its a 2 liner is not sensible.
+Good contributions include:
+
+- COS emulation fixes and tests.
+- CLI support for COS management.
+- Documentation that clearly distinguishes this fork from upstream.
+- Build, test, and reliability improvements.
+- Synthetic fixtures and reproducible tests that do not contain sensitive data.
+
+Out-of-scope contributions include:
+
+- Real production card dumps, protected data, keys, secrets, or personal data.
+- Instructions or code intended to bypass payment, fare, identity, access-control, or entitlement systems.
+- Requests to emulate third-party credentials without authorization.
+- Changes that remove license notices, upstream attribution, safety warnings, or third-party notices.
+
+## Legal and Attribution Requirements
+
+- Keep the GPL-3.0 license intact.
+- Preserve upstream copyright and attribution.
+- Mark fork-specific behavior clearly in documentation and user-facing text.
+- Do not add dependencies or assets with incompatible licenses.
+- Do not commit generated firmware packages, private keys, dumps, or local device data unless there is a clear project reason and the data is safe to publish.
+
+## Development Guidelines
+
+- Prefer small, focused commits.
+- Avoid force pushes on shared branches.
+- Keep changes scoped to the affected layer.
+- Do not touch bootloader or hardware-layer code for COS behavior unless the change is explicitly justified and reviewed.
+- Include focused tests for APDU parsing, file-system behavior, storage behavior, and CLI protocol changes.
+- Run relevant local checks before submitting changes.
+
+Useful checks:
+
+```bash
+cc -std=c11 -fshort-enums \
+  -DPROJECT_CHAMELEON_ULTRA \
+  -DAPP_FW_VER_MAJOR=0 \
+  -DAPP_FW_VER_MINOR=0 \
+  -Wall -Wextra \
+  -Ifirmware/application/tests/cos_host/stubs \
+  -Ifirmware/application/src \
+  -Ifirmware/application/src/utils \
+  -Ifirmware/application/src/rfid \
+  -Ifirmware/application/src/rfid/nfctag \
+  -Ifirmware/application/src/rfid/nfctag/hf \
+  -Ifirmware/common \
+  firmware/application/tests/cos_host/cos_host_test.c \
+  firmware/application/src/rfid/nfctag/hf/nfc_cos.c \
+  firmware/application/src/rfid/crc_utils.c \
+  -o /tmp/cos_host_test && /tmp/cos_host_test
+
+make -C firmware/application -j4 APP_FW_VER_MAJOR=0 APP_FW_VER_MINOR=0 GNU_INSTALL_ROOT=/opt/homebrew/bin/
+python3 -m py_compile software/script/chameleon_cmd.py software/script/chameleon_cli_unit.py
+```
+
+## Reporting Issues
+
+Report issues caused by this fork in this repository. Do not send COS-specific bug reports to upstream maintainers unless the issue is independently reproduced in upstream Chameleon Ultra.
+
+Security-sensitive reports should follow [SECURITY.md](SECURITY.md).

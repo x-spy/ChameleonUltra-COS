@@ -1,25 +1,29 @@
 ---
 name: Feature request
-about: Suggest an idea for this project
+about: Suggest a ChameleonUltra-COS improvement
 title: "[idea]"
-labels: Request, enhancement
+labels: enhancement
 assignees: ''
 
 ---
 
-Please keep in mind we are still at the infancy of the project and a lot has still to be done.
+Before submitting:
 
-Have first a look at the [Whitepaper](https://github.com/RfidResearchGroup/ChameleonUltra/blob/main/docs/technical_whitepaper.md), the Wiki [Roadmap](https://github.com/RfidResearchGroup/ChameleonUltra/wiki/Public-Roadmap) and [Wishlist](https://github.com/RfidResearchGroup/ChameleonUltra/wiki/Wishlist).  
-No need for creating issues for well known missing supports, we are already aware :)
+- Keep the request within the scope of authorized research and interoperability testing.
+- Do not request unauthorized card emulation, access bypass, payment/fare bypass, or protected data handling.
+- Do not include real card dumps, keys, secrets, credentials, or personal data.
 
-**Is your feature request related to a problem? Please describe.**
-A clear and concise description of what the problem is. Ex. I'm always frustrated when [...]
+**Problem**
+What problem should this solve?
 
-**Describe the solution you'd like**
-A clear and concise description of what you want to happen.
+**Proposed solution**
+What behavior or command would you like?
 
-**Describe alternatives you've considered**
-A clear and concise description of any alternative solutions or features you've considered.
+**Alternatives considered**
+What else did you consider?
+
+**Safety and legality**
+Explain why the requested feature can be developed and tested with authorized systems and safe synthetic data.
 
 **Additional context**
-Add any other context or screenshots about the feature request here.
+Any relevant technical details, APDU examples with synthetic data, or compatibility notes.
