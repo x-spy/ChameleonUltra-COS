@@ -1,4 +1,4 @@
-#!/bin/env bash
+#!/usr/bin/env bash
 
 if [[ $BASH_SOURCE = */* ]]; then
   cd -- "${BASH_SOURCE%/*}/" || exit
@@ -12,6 +12,9 @@ softdevice_id=0x0100
 # TODO: find a way to manage this automatically, I don't want to rely on action build #.
 application_version=1
 bootloader_version=1
+app_fw_ver_major=${APP_FW_VER_MAJOR:-0}
+app_fw_ver_minor=${APP_FW_VER_MINOR:-0}
+build_jobs=${BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)}
 
 device_type=${CURRENT_DEVICE_TYPE:-ultra}
 case $device_type in
@@ -20,7 +23,7 @@ case $device_type in
   *)       echo "Unknown CURRENT_DEVICE_TYPE $CURRENT_DEVICE_TYPE, aborting."; exit 1 ;;
 esac
 
-echo "Building firmware for $device_type (hw_version=$hw_version)"
+echo "Building firmware for $device_type (hw_version=$hw_version, app_fw=$app_fw_ver_major.$app_fw_ver_minor, jobs=$build_jobs)"
 
 set -xe
 
@@ -28,12 +31,12 @@ rm -rf "objects"
 
 (
   cd bootloader
-  make -j
+  make -j"$build_jobs"
 )
 
 (
   cd application
-  make -j
+  make -j"$build_jobs" APP_FW_VER_MAJOR="$app_fw_ver_major" APP_FW_VER_MINOR="$app_fw_ver_minor"
 )
 
 (
